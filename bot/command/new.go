@@ -47,6 +47,8 @@ func NewResponse(status NewStatus, info NewInfo, sett *settings.GuildSettings) *
 				"apiHyperlink": info.ApiHyperlink,
 				"downloadURL":  CaptureDownloadURL,
 			})
+		// Intentionally omit embed fields (URL/Code box) and keep only the message content.
+		/*
 		embeds = []*discordgo.MessageEmbed{
 			{
 				Fields: []*discordgo.MessageEmbedField{
@@ -69,6 +71,7 @@ func NewResponse(status NewStatus, info NewInfo, sett *settings.GuildSettings) *
 				},
 			},
 		}
+		*/
 	case NewNoVoiceChannel:
 		content = sett.LocalizeMessage(&i18n.Message{
 			ID:    "commands.new.nochannel",
