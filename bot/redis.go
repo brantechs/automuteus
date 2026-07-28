@@ -424,13 +424,9 @@ func (redisInterface *RedisInterface) setUsernameOrUserIDMappings(guildID, key s
 		return err
 	}
 
-	err = redisInterface.client.HSet(ctx, cacheHash, key, jBytes).Err()
-	// 1 week TTL on username cache
-	if err == nil {
-		redisInterface.client.Expire(ctx, cacheHash, time.Hour*24*7)
-	}
-
-	return err
+	// Username links are persistent guild data. Expiring this guild-wide hash
+	// removes every member's link at once, so keep it without a TTL.
+	return redisInterface.client.HSet(ctx, cacheHash, key, jBytes).Err()
 }
 
 func (redisInterface *RedisInterface) LockSnowflake(snowflake string) *redislock.Lock {
