@@ -234,23 +234,22 @@ func discordMainWrapper() error {
 	// only register commands if we're not the official bot, OR we're the primary/main shard
 	var registeredCommands []registeredCommand
 	if !isOfficial || shards.isPrimaryShard() {
+		// fork: 1 件ずつの create + 終了時の delete だと、再起動のたびに「新規作成」になって
+		// Discord の 1 日 200 件の作成上限にすぐ達する (上限に達すると /new などが消えたままになる)。
+		// bulk overwrite なら既にあるコマンドは更新扱いで上限を消費しない。終了時の削除も既定では行わない
 		for _, guild := range slashCommandGuildIds {
-			for _, v := range command.All {
-				if guild == "" {
-					log.Printf("Registering command %s GLOBALLY\n", v.Name)
-				} else {
-					log.Printf("Registering command %s in guild %s\n", v.Name, guild)
-				}
-
-				id, err := bots[0].PrimarySession.ApplicationCommandCreate(bots[0].PrimarySession.State.User.ID, guild, v)
-				if err != nil {
-					log.Panicf("Cannot create command: %v", err)
-				} else {
-					registeredCommands = append(registeredCommands, registeredCommand{
-						GuildID:            guild,
-						ApplicationCommand: id,
-					})
-				}
+			if guild == "" {
+				log.Printf("Registering %d commands GLOBALLY (bulk overwrite)\n", len(command.All))
+			} else {
+				log.Printf("Registering %d commands in guild %s (bulk overwrite)\n", len(command.All), guild)
+			}
+			cmds, err := bots[0].PrimarySession.ApplicationCommandBulkOverwrite(bots[0].PrimarySession.State.User.ID, guild, command.All)
+			if err != nil {
+				log.Printf("Cannot register commands in guild %q: %v", guild, err)
+				continue
+			}
+			for _, c := range cmds {
+				registeredCommands = append(registeredCommands, registeredCommand{GuildID: guild, ApplicationCommand: c})
 			}
 		}
 		log.Println("Finishing registering all commands!")
@@ -261,7 +260,7 @@ func discordMainWrapper() error {
 	time.Sleep(time.Second)
 
 	// only delete the slash commands if we're not the official bot, AND we're the primary/"master" shard
-	if !isOfficial && shards.isPrimaryShard() {
+	if !isOfficial && shards.isPrimaryShard() && os.Getenv("SLASH_COMMAND_DELETE_ON_EXIT") == "1" {
 		log.Println("Deleting slash commands")
 		for _, v := range registeredCommands {
 			if v.GuildID == "" {
