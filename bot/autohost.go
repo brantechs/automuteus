@@ -159,15 +159,17 @@ func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow
 	running := ready && st.Host.GameRunning
 	// 停止中: ホストを起動して部屋を立てる / 起動済みでメニューに居る: 部屋建てだけ / それ以外 (ロビー・試合中・準備中): 押せない
 	startEnabled := ready && (!running || st.Lobby.State == "menu")
+	// discordgo v0.27.1 の Button.Emoji は値型 (omitempty 無し) で、未指定だと "emoji":{} が送られて
+	// Discord が COMPONENT_INVALID_EMOJI で弾く。絵文字は必ず Emoji に入れる
 	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: "▶ 部屋を立てる", Style: discordgo.PrimaryButton, CustomID: autohostBtnStart,
-			Disabled: !startEnabled},
-		discordgo.Button{Label: "🎮 ゲーム開始", Style: discordgo.SuccessButton, CustomID: autohostBtnGameStart,
-			Disabled: !st.inLobby() || !ready},
-		discordgo.Button{Label: "🔄 立て直し", Style: discordgo.SecondaryButton, CustomID: autohostBtnRecreate,
-			Disabled: !st.inLobby() || !ready},
-		discordgo.Button{Label: "⏹ 停止", Style: discordgo.DangerButton, CustomID: autohostBtnStop,
-			Disabled: !running},
+		discordgo.Button{Label: "部屋を立てる", Emoji: discordgo.ComponentEmoji{Name: "▶️"}, Style: discordgo.PrimaryButton,
+			CustomID: autohostBtnStart, Disabled: !startEnabled},
+		discordgo.Button{Label: "ゲーム開始", Emoji: discordgo.ComponentEmoji{Name: "🎮"}, Style: discordgo.SuccessButton,
+			CustomID: autohostBtnGameStart, Disabled: !st.inLobby() || !ready},
+		discordgo.Button{Label: "立て直し", Emoji: discordgo.ComponentEmoji{Name: "🔄"}, Style: discordgo.SecondaryButton,
+			CustomID: autohostBtnRecreate, Disabled: !st.inLobby() || !ready},
+		discordgo.Button{Label: "停止", Emoji: discordgo.ComponentEmoji{Name: "⏹️"}, Style: discordgo.DangerButton,
+			CustomID: autohostBtnStop, Disabled: !running},
 	}}
 }
 

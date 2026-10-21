@@ -59,6 +59,23 @@ func TestAutohostButtons(t *testing.T) {
 	}
 }
 
+// discordgo v0.27.1 は Button.Emoji が空でも "emoji":{} を送り、Discord が COMPONENT_INVALID_EMOJI で弾く
+func TestAutohostButtonsHaveEmoji(t *testing.T) {
+	for _, c := range autohostComponents(nil, "111").Components {
+		b := c.(discordgo.Button)
+		if b.Emoji.Name == "" && b.Emoji.ID == "" {
+			t.Errorf("button %s has no emoji", b.CustomID)
+		}
+		raw, err := json.Marshal(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) == "" || json.Valid(raw) == false {
+			t.Fatalf("invalid json for %s", b.CustomID)
+		}
+	}
+}
+
 func TestAutohostStatusAcceptsFloats(t *testing.T) {
 	st := parseStatus(t, `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","code":"ECVRTG","ping":4.0,"players":3,"recreates":1.0},
 		"regulation":{"name":"10人","preset":1.0,"roles":[{"name":"インポスター","count":2.0,"chance":100}]}}`)
