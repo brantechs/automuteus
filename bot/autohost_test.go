@@ -40,6 +40,9 @@ func TestAutohostButtons(t *testing.T) {
 		// ロビーでは部屋ボタンが「部屋を立て直す」になって押せる
 		{"lobby", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","code":"ECVRTG"}}`,
 			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: false, autohostBtnStop: false}},
+		// 部屋ガチャ中 (announced=false) は AutoLobby が自分で立て直しているので、部屋ボタンも試合開始も押せない
+		{"rolling", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","code":"CSSULG","announced":false}}`,
+			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"menu", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"menu"}}`,
 			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"ingame", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"ingame"}}`,

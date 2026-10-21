@@ -147,8 +147,14 @@ var (
 	autohostLastBadJSONLog time.Time
 )
 
+// inLobby: 部屋が確定してロビーで待機中。部屋ガチャ中 (announced=false) は含めない
 func (st *autohostStatus) inLobby() bool {
-	return st != nil && st.Busy == nil && st.Host.GameRunning && st.Lobby.State == "lobby"
+	return st != nil && st.Busy == nil && st.Host.GameRunning && st.Lobby.State == "lobby" && !st.rolling()
+}
+
+// rolling: ping ゲートで部屋ガチャ中 (AutoLobby が自分で立て直している)
+func (st *autohostStatus) rolling() bool {
+	return st != nil && st.Lobby.State == "lobby" && st.Lobby.Announced != nil && !*st.Lobby.Announced
 }
 
 // usedElsewhere: 自動ホストが別のサーバーのゲームに紐づいたまま稼働している
@@ -282,12 +288,9 @@ func (bot *Bot) autohostEmbedFields(dgs *GameState) []*discordgo.MessageEmbedFie
 	}
 	fields := []*discordgo.MessageEmbedField{{Name: "🤖 自動ホスト", Value: autohostTrim(head)}}
 
-	inLobby := st != nil && st.Busy == nil && st.Host.GameRunning && st.Lobby.State == "lobby" && !st.usedElsewhere(dgs.GuildID)
-	if inLobby {
-		// 部屋コードは AutoMuteUs 自身も「🔒 ROOM CODE」で出すので、そちらが出ていないときだけ出す
-		if room, _, _ := dgs.GameData.GetRoomRegionMap(); room == "" && st.Lobby.Code != "" {
-			fields = append(fields, &discordgo.MessageEmbedField{Name: "🔑 部屋コード", Value: "**" + st.Lobby.Code + "**", Inline: true})
-		}
+	// ping・参加は部屋が確定してから (部屋ガチャ中は出さない)。部屋コードは確定すると AutoMuteUs 自身が
+	// 「🔒 ルームコード」で上に出すので、ここでは出さない
+	if st.inLobby() && !st.usedElsewhere(dgs.GuildID) {
 		if st.Lobby.Ping != nil {
 			fields = append(fields, &discordgo.MessageEmbedField{Name: "📶 ping", Value: fmt.Sprintf("**%.0f** ms", *st.Lobby.Ping), Inline: true})
 		}
