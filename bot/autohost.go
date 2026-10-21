@@ -11,6 +11,9 @@ package bot
 //	autohost:actions (pub/sub) ここ → bot。ボタン操作 {id, action, guild_id, user_id, allowed}
 //	autohost:link    (pub/sub) ここ → bot。/new で発行した connect code {guild_id, connect_code}
 //	autohost:unlink  (pub/sub) ここ → bot。/end {guild_id, connect_code}
+//	autohost:watch   (pub/sub) ここ → bot。「ライブ観戦」ボタン (と警告の確認ボタン) を押した人と interaction の
+//	                 {guild_id, user_id, user_name, application_id, token, confirm}。ここは defer だけして、
+//	                 本人だけに見える返事 (専用トークン付き URL / 試合参加者への警告) は bot が interaction の webhook で書く
 
 import (
 	"context"
@@ -34,12 +37,16 @@ const (
 	autohostChActions    = "autohost:actions"
 	autohostChLink       = "autohost:link"
 	autohostChUnlink     = "autohost:unlink"
+	autohostChWatch      = "autohost:watch"
 	autohostButtonPrefix = "autohost:"
 
 	autohostBtnStart     = "autohost:start"
 	autohostBtnGameStart = "autohost:gamestart"
 	autohostBtnRecreate  = "autohost:recreate"
 	autohostBtnStop      = "autohost:stop"
+	// ライブ観戦: 誰でも押せる (操作権限は要らない)。確認ボタンは bot が書く警告メッセージに付く
+	autohostBtnWatch        = "autohost:watch"
+	autohostBtnWatchConfirm = "autohost:watch:confirm"
 	// 立て直し・ホスト終了は押した人だけに見える確認メッセージを挟む (Discord のボタンには確認ダイアログが無い)
 	autohostConfirmPrefix = "autohost:confirm:"
 	autohostBtnCancel     = "autohost:cancel"
@@ -120,6 +127,11 @@ type autohostStatus struct {
 		At     int64  `json:"at"`
 		By     string `json:"by"`
 	} `json:"last_action"`
+	// Stream: 観戦配信。Watch = ライブ観戦ボタンを出すか (bot に視聴 URL の設定がある)
+	Stream *struct {
+		Running bool `json:"running"`
+		Watch   bool `json:"watch"`
+	} `json:"stream"`
 	// Notice: 操作の結果ではない出来事 (放置で部屋が閉じられた など)。新しい部屋が確定すると消える
 	Notice *struct {
 		Text string `json:"text"`
@@ -165,6 +177,11 @@ func (st *autohostStatus) rolling() bool {
 	return st != nil && st.Lobby.State == "lobby" && st.Lobby.Announced != nil && !*st.Lobby.Announced
 }
 
+// watchable: このサーバーの /new に紐づいていて、ライブ観戦が有効
+func (st *autohostStatus) watchable(guildID string) bool {
+	return st != nil && st.Stream != nil && st.Stream.Watch && st.Link != nil && st.Link.GuildID == guildID
+}
+
 // usedElsewhere: 自動ホストが別のサーバーのゲームに紐づいたまま稼働している
 func (st *autohostStatus) usedElsewhere(guildID string) bool {
 	return st != nil && st.Link != nil && st.Link.GuildID != guildID && st.Host.GameRunning
@@ -196,6 +213,9 @@ func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow
 		// ホスト終了: Bragame の自動ホスト用 Among Us を終了する (部屋は消える。設定の同期も再開する)
 		discordgo.Button{Label: "ホスト終了", Emoji: discordgo.ComponentEmoji{Name: "⏹️"}, Style: discordgo.DangerButton,
 			CustomID: autohostBtnStop, Disabled: !stopEnabled},
+		// ライブ観戦: 押した人だけに専用 URL が届く (handleAutohostButton → bot)
+		discordgo.Button{Label: "ライブ観戦", Emoji: discordgo.ComponentEmoji{Name: "📺"}, Style: discordgo.SecondaryButton,
+			CustomID: autohostBtnWatch, Disabled: !st.watchable(guildID)},
 	}}
 }
 
@@ -457,7 +477,9 @@ func (bot *Bot) autohostAllowed(i *discordgo.InteractionCreate, sett *settings.G
 }
 
 // handleAutohostButton: ボタンは 2 秒以内に必ず応答する (実際の操作は自動ホスト bot が非同期で行い、結果はタイルに出る)。
-// 既存のレート制限 (超過でソフトBAN) は通さず、同じ人の同じボタンの 1.5 秒以内の連打だけ無視する
+// 既存のレート制限 (超過でソフトBAN) は通さず、同じ人の同じボタンの 1.5 秒以内の連打だけ無視する。
+// 受け付けた操作には「受け付けました」を返さず黙って ack する (結果はパネルに出る)。本人だけに見える返事は
+// 操作できなかった理由と、ホスト終了・立て直しの確認だけ
 func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *settings.GuildSettings) *discordgo.InteractionResponse {
 	reply := func(msg string) *discordgo.InteractionResponse {
 		return &discordgo.InteractionResponse{
@@ -468,6 +490,8 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	customID := i.MessageComponentData().CustomID
 	// 確認メッセージ上のボタン (実行・キャンセル) は、その確認メッセージ自体を書き換えて応答する
 	confirmed := strings.HasPrefix(customID, autohostConfirmPrefix)
+	// silentAck: 何も表示せずに受け付ける (パネルのボタンはそのまま)
+	silentAck := &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate}
 	if confirmed || customID == autohostBtnCancel {
 		reply = func(msg string) *discordgo.InteractionResponse {
 			return &discordgo.InteractionResponse{
@@ -487,7 +511,7 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	last, seen := autohostPressed[key]
 	if seen && time.Since(last) < 1500*time.Millisecond {
 		autohostPressLock.Unlock()
-		return reply("⏳ 処理中です。")
+		return silentAck // 連打は黙って無視する
 	}
 	autohostPressed[key] = time.Now()
 	if len(autohostPressed) > 200 {
@@ -498,6 +522,10 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		}
 	}
 	autohostPressLock.Unlock()
+
+	if customID == autohostBtnWatch || customID == autohostBtnWatchConfirm {
+		return bot.autohostWatchResponse(i, customID == autohostBtnWatchConfirm)
+	}
 
 	allowed := bot.autohostAllowed(i, sett)
 	if !allowed {
@@ -558,7 +586,46 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	go bot.autohostPublish(autohostChActions, map[string]interface{}{
 		"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
 	})
+	if !confirmed {
+		return silentAck
+	}
+	// 確認メッセージ (本人だけに見える) から実行したときは、その確認メッセージを書き換えて閉じる
 	return reply(fmt.Sprintf("受け付けました: %s (結果は上のメッセージに出ます)", label))
+}
+
+// autohostWatchResponse: ライブ観戦ボタン。URL (メンバー毎のトークン) は自動ホスト bot が発行するので、ここでは
+// 本人だけに見える形で defer し、interaction の token を bot に渡す。bot がその応答を後から書き換える
+// (試合参加者には警告と確認ボタン → 確認ボタンもここに来て、confirm 付きで渡す)
+func (bot *Bot) autohostWatchResponse(i *discordgo.InteractionCreate, confirm bool) *discordgo.InteractionResponse {
+	msg := ""
+	st := bot.autohostReadStatus()
+	switch {
+	case st == nil:
+		msg = "⚪ 自動ホスト bot に接続できません。"
+	case !st.watchable(i.GuildID):
+		msg = "今は観戦できません (/new から /end の間だけ使えます)。"
+	}
+	if msg != "" {
+		if confirm {
+			return &discordgo.InteractionResponse{Type: discordgo.InteractionResponseUpdateMessage,
+				Data: &discordgo.InteractionResponseData{Content: msg, Components: []discordgo.MessageComponent{}}}
+		}
+		return &discordgo.InteractionResponse{Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: msg}}
+	}
+	name := i.Member.Nick
+	if name == "" {
+		name = i.Member.User.Username
+	}
+	go bot.autohostPublish(autohostChWatch, map[string]interface{}{
+		"guild_id": i.GuildID, "user_id": i.Member.User.ID, "user_name": name,
+		"application_id": i.AppID, "token": i.Token, "confirm": confirm,
+	})
+	if confirm {
+		return &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate}
+	}
+	return &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral}}
 }
 
 // autohostConfirmResponse: 押した人だけに見える確認メッセージ。実行すると autohost:confirm:<action> が届く

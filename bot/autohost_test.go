@@ -76,7 +76,7 @@ func TestAutohostRoomButtonLabel(t *testing.T) {
 		}
 		return out
 	}
-	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "試合開始" || got[1] != "部屋を立て直す" || len(got) != 3 {
+	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "試合開始" || got[1] != "部屋を立て直す" || got[3] != "ライブ観戦" || len(got) != 4 {
 		t.Fatalf("lobby: %v", got)
 	}
 	if got := labels(`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`); got[1] != "部屋を立てる" || got[2] != "ホスト終了" {
@@ -170,6 +170,41 @@ func TestAutohostEnabledFor(t *testing.T) {
 	autohostGuilds = map[string]bool{"2": true}
 	if autohostEnabledFor("1") || !autohostEnabledFor("2") {
 		t.Fatal("guild allow list not honored")
+	}
+}
+
+// ライブ観戦ボタン: このサーバーの /new に紐づいていて bot 側で有効なときだけ押せる。ID は autohost: で始まる
+func TestAutohostWatchButton(t *testing.T) {
+	var st autohostStatus
+	if err := json.Unmarshal([]byte(`{"v":1,"host":{"game_running":true},"lobby":{"state":"lobby"},
+		"stream":{"running":true,"watch":true},"link":{"guild_id":"1","connect_code":"ABCDEFGH"}}`), &st); err != nil {
+		t.Fatal(err)
+	}
+	find := func(row discordgo.ActionsRow) discordgo.Button {
+		for _, c := range row.Components {
+			if b := c.(discordgo.Button); b.CustomID == autohostBtnWatch {
+				return b
+			}
+		}
+		t.Fatal("watch button missing")
+		return discordgo.Button{}
+	}
+	if b := find(autohostComponents(&st, "1")); b.Disabled || b.Emoji.Name == "" {
+		t.Fatalf("watch should be enabled with emoji: %+v", b)
+	}
+	if !find(autohostComponents(&st, "2")).Disabled {
+		t.Fatal("watch must be disabled in another guild")
+	}
+	st.Stream.Watch = false
+	if !find(autohostComponents(&st, "1")).Disabled {
+		t.Fatal("watch must be disabled when bot has no view URL")
+	}
+	if !find(autohostComponents(nil, "1")).Disabled {
+		t.Fatal("watch must be disabled without status")
+	}
+	if !strings.HasPrefix(autohostBtnWatchConfirm, autohostButtonPrefix) ||
+		strings.HasPrefix(autohostBtnWatchConfirm, autohostConfirmPrefix) {
+		t.Fatal("watch confirm must route to handleAutohostButton but not as an operation confirm")
 	}
 }
 
