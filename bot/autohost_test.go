@@ -101,6 +101,17 @@ func TestAutohostStateLine(t *testing.T) {
 	}
 }
 
+func TestConnectionPayloadLinked(t *testing.T) {
+	cases := map[interface{}]bool{
+		"true": true, `{"connected":true}`: true, "false": false, `{"connected":false}`: false, "": false, 1: false,
+	}
+	for p, want := range cases {
+		if got := connectionPayloadLinked(p); got != want {
+			t.Errorf("%v: got %v want %v", p, got, want)
+		}
+	}
+}
+
 func TestAutohostIDSet(t *testing.T) {
 	s := autohostIDSet(" 1, 2 ,,3")
 	if len(s) != 3 || !s["1"] || !s["2"] || !s["3"] {

@@ -74,11 +74,8 @@ func (bot *Bot) SubscribeToGameByConnectCode(guildID, connectCode string, endGam
 					for lock == nil {
 						lock, dgs = bot.RedisInterface.GetDiscordGameStateAndLock(dgsRequest)
 					}
-					if job.Payload == "true" {
-						dgs.Linked = true
-					} else {
-						dgs.Linked = false
-					}
+					// galactus:latest は "true" ではなく {"connected":true} を送る (autohost.go connectionPayloadLinked)
+					dgs.Linked = connectionPayloadLinked(job.Payload)
 					dgs.ConnectCode = connectCode
 					bot.RedisInterface.SetDiscordGameState(dgs, lock)
 

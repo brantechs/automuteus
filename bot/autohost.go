@@ -325,6 +325,26 @@ func (bot *Bot) autohostEmbedFields(dgs *GameState) []*discordgo.MessageEmbedFie
 	return fields
 }
 
+// connectionPayloadLinked: galactus の ConnectionJob の payload が「接続」か。この AutoMuteUs (8.3.x) は
+// "true" しか想定していないが、galactus:latest は {"connected":true} を送るため、両方を受け付ける
+// (これが無いと capture が繋がっていても「No capture linked」のままになる)
+func connectionPayloadLinked(payload interface{}) bool {
+	s, ok := payload.(string)
+	if !ok {
+		return false
+	}
+	if s == "true" {
+		return true
+	}
+	var v struct {
+		Connected bool `json:"connected"`
+	}
+	if err := json.Unmarshal([]byte(s), &v); err == nil {
+		return v.Connected
+	}
+	return false
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a
