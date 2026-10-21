@@ -490,7 +490,15 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		}
 	}
 	label := map[string]string{"start": "部屋を立てる", "room": "部屋を立てる", "gamestart": "試合開始",
-		"recreate": "部屋を立て直す", "stop": "ホスト終了"}[action]
+		"recreate": "部屋を立て直す", "stop": "ホスト終了 (BranMuteUs のゲームも終了します)"}[action]
+	if action == "stop" {
+		// ホスト終了では AutoMuteUs のゲームも /end と同じように終わらせる (パネルのメッセージも消える)
+		gsr := GameStateRequest{GuildID: i.GuildID, TextChannel: i.ChannelID}
+		if st.Link != nil && st.Link.GuildID == i.GuildID {
+			gsr.ConnectCode = st.Link.ConnectCode
+		}
+		go bot.autohostEndGame(gsr)
+	}
 	// redis が詰まっても 2 秒の応答期限を守れるよう、publish は待たない
 	go bot.autohostPublish(autohostChActions, map[string]interface{}{
 		"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
@@ -528,6 +536,28 @@ func (bot *Bot) autohostNewResponse(guildID string, allowed bool) *discordgo.Int
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: msg},
 	}
+}
+
+// autohostEndGame: 「ホスト終了」で AutoMuteUs のゲームも /end と同じ手順で終わらせる
+// (購読 goroutine に kill を送る → forceEndGame がメッセージを消して autohost に unlink を送る → 全員のミュート解除)
+func (bot *Bot) autohostEndGame(gsr GameStateRequest) {
+	dgs := bot.RedisInterface.GetReadOnlyDiscordGameState(gsr)
+	if dgs == nil || !dgs.GameStateMsg.Exists() {
+		return
+	}
+	bot.ChannelsMapLock.Lock()
+	v, ok := bot.EndGameChannels[dgs.ConnectCode]
+	delete(bot.EndGameChannels, dgs.ConnectCode)
+	bot.ChannelsMapLock.Unlock()
+	if ok {
+		v <- true
+	} else {
+		bot.autohostUnlink(dgs.GuildID, dgs.ConnectCode)
+	}
+	if err := bot.applyToAll(dgs, false, false); err != nil {
+		log.Println("autohost: unmute on host end failed:", err)
+	}
+	log.Printf("autohost: ended game %s in guild %s by host end button\n", dgs.ConnectCode, dgs.GuildID)
 }
 
 var (
