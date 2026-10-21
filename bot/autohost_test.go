@@ -59,6 +59,14 @@ func TestAutohostButtons(t *testing.T) {
 	}
 }
 
+func TestAutohostStatusAcceptsFloats(t *testing.T) {
+	st := parseStatus(t, `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","code":"ECVRTG","ping":4.0,"players":3,"recreates":1.0},
+		"regulation":{"name":"10人","preset":1.0,"roles":[{"name":"インポスター","count":2.0,"chance":100}]}}`)
+	if st.Lobby.Ping == nil || *st.Lobby.Ping != 4 || st.Regulation.Roles[0].Count != 2 {
+		t.Fatalf("unexpected parse: %+v", st)
+	}
+}
+
 func TestAutohostIDSet(t *testing.T) {
 	s := autohostIDSet(" 1, 2 ,,3")
 	if len(s) != 3 || !s["1"] || !s["2"] || !s["3"] {

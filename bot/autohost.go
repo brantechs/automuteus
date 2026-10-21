@@ -81,21 +81,22 @@ type autohostStatus struct {
 		SteamPersona       string `json:"steam_persona"`
 	} `json:"host"`
 	Lobby struct {
-		State     string `json:"state"`
-		Code      string `json:"code"`
-		Ping      *int   `json:"ping"`
-		Players   *int   `json:"players"`
-		Recreates *int   `json:"recreates"`
+		State string `json:"state"`
+		Code  string `json:"code"`
+		// 数値は AutoLobby/Python 側で float になっても読めるよう float64 で受ける
+		Ping      *float64 `json:"ping"`
+		Players   *float64 `json:"players"`
+		Recreates *float64 `json:"recreates"`
 	} `json:"lobby"`
 	Regulation *struct {
-		Name    string `json:"name"`
-		Preset  *int   `json:"preset"`
-		ForPlay *int   `json:"for_players"`
+		Name    string   `json:"name"`
+		Preset  *float64 `json:"preset"`
+		ForPlay *float64 `json:"for_players"`
 		Roles   []struct {
-			Name   string `json:"name"`
-			Side   string `json:"side"`
-			Count  int    `json:"count"`
-			Chance int    `json:"chance"`
+			Name   string  `json:"name"`
+			Side   string  `json:"side"`
+			Count  float64 `json:"count"`
+			Chance float64 `json:"chance"`
 		} `json:"roles"`
 		Options []struct {
 			Name  string `json:"name"`
@@ -126,11 +127,22 @@ func (bot *Bot) autohostReadStatus() *autohostStatus {
 	}
 	var st autohostStatus
 	if err := json.Unmarshal([]byte(raw), &st); err != nil {
-		log.Println("autohost: bad status json:", err)
+		// 型の食い違いはタイルとボタンを全部止めてしまうので、原因が分かるよう生の JSON も出す (1 分に 1 回まで)
+		autohostLogLock.Lock()
+		if time.Since(autohostLastBadJSONLog) > time.Minute {
+			autohostLastBadJSONLog = time.Now()
+			log.Printf("autohost: bad status json: %v raw=%.500s", err, raw)
+		}
+		autohostLogLock.Unlock()
 		return nil
 	}
 	return &st
 }
+
+var (
+	autohostLogLock        sync.Mutex
+	autohostLastBadJSONLog time.Time
+)
 
 func (st *autohostStatus) inLobby() bool {
 	return st != nil && st.Busy == nil && st.Host.GameRunning && st.Lobby.State == "lobby"
@@ -212,11 +224,11 @@ func (bot *Bot) autohostEmbedField(guildID string) *discordgo.MessageEmbedField 
 			fmt.Fprintf(&b, " `%s`", st.Lobby.Code)
 		}
 		if st.Lobby.Ping != nil {
-			fmt.Fprintf(&b, " / ping %dms", *st.Lobby.Ping)
+			fmt.Fprintf(&b, " / ping %.0fms", *st.Lobby.Ping)
 		}
 		if st.Lobby.Players != nil {
 			// 自動ホスト自身 (GM) を除いた人数
-			fmt.Fprintf(&b, " / 参加 %d人", maxInt(*st.Lobby.Players-1, 0))
+			fmt.Fprintf(&b, " / 参加 %d人", maxInt(int(*st.Lobby.Players)-1, 0))
 		}
 	case st.Lobby.State == "ingame":
 		b.WriteString("🎮 試合中")
@@ -230,19 +242,19 @@ func (bot *Bot) autohostEmbedField(guildID string) *discordgo.MessageEmbedField 
 		if r.Name != "" {
 			b.WriteString(r.Name)
 		} else if r.Preset != nil {
-			fmt.Fprintf(&b, "プリセット%d", *r.Preset)
+			fmt.Fprintf(&b, "プリセット%.0f", *r.Preset)
 		}
 		if r.ForPlay != nil {
-			fmt.Fprintf(&b, " (%d人で開始した場合)", *r.ForPlay)
+			fmt.Fprintf(&b, " (%.0f人で開始した場合)", *r.ForPlay)
 		}
 		roles := make([]string, 0, len(r.Roles))
 		for _, role := range r.Roles {
 			s := role.Name
 			if role.Count > 1 {
-				s += fmt.Sprintf("×%d", role.Count)
+				s += fmt.Sprintf("×%.0f", role.Count)
 			}
 			if role.Chance > 0 && role.Chance < 100 {
-				s += fmt.Sprintf("(%d%%)", role.Chance)
+				s += fmt.Sprintf("(%.0f%%)", role.Chance)
 			}
 			roles = append(roles, s)
 		}
@@ -322,6 +334,9 @@ func (bot *Bot) autohostAllowed(i *discordgo.InteractionCreate, sett *settings.G
 	if g, err := bot.PrimarySession.State.Guild(i.GuildID); err == nil && g.OwnerID == m.User.ID {
 		return true
 	}
+	if len(sett.AdminUserIDs) > 0 && sett.HasAdminPerms(m.User) {
+		return true
+	}
 	for _, r := range m.Roles {
 		if autohostRoles[r] {
 			return true
@@ -356,6 +371,13 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		return reply("⏳ 処理中です。")
 	}
 	autohostPressed[key] = time.Now()
+	if len(autohostPressed) > 200 {
+		for k, t := range autohostPressed {
+			if time.Since(t) > time.Minute {
+				delete(autohostPressed, k)
+			}
+		}
+	}
 	autohostPressLock.Unlock()
 
 	allowed := bot.autohostAllowed(i, sett)
@@ -375,19 +397,34 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	if action == "start" && st.Host.GameRunning {
 		action = "room" // 起動済みでメニューに居るとき: 部屋建てだけ
 	}
-	bot.autohostPublish(autohostChActions, map[string]interface{}{
+	// redis が詰まっても 2 秒の応答期限を守れるよう、publish は待たない
+	go bot.autohostPublish(autohostChActions, map[string]interface{}{
 		"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
 	})
 	return reply(fmt.Sprintf("受け付けました: %s (結果は上のメッセージに出ます)", label))
 }
 
-// StartAutohostSubscriber: 自動ホスト bot からの更新依頼を受けて game state メッセージを更新する
-func (bot *Bot) StartAutohostSubscriber() {
+var autohostSubscribeOnce sync.Once
+
+// InitAutohost: ハンドラ登録/Open より前に呼ぶ (起動直後に作られるメッセージにもボタンを付けるため)
+func (bot *Bot) InitAutohost() {
 	if !autohostEnabled {
 		return
 	}
 	autohostBot = bot
-	go func() {
+	bot.StartAutohostSubscriber()
+}
+
+// StartAutohostSubscriber: 自動ホスト bot からの更新依頼を受けて game state メッセージを更新する (何度呼んでも購読は 1 本)
+func (bot *Bot) StartAutohostSubscriber() {
+	if !autohostEnabled {
+		return
+	}
+	autohostSubscribeOnce.Do(func() { go bot.autohostRefreshLoop() })
+}
+
+func (bot *Bot) autohostRefreshLoop() {
+	{
 		for {
 			sub := bot.RedisInterface.client.Subscribe(context.Background(), autohostChRefresh)
 			log.Println("autohost: subscribed to", autohostChRefresh)
@@ -407,11 +444,16 @@ func (bot *Bot) StartAutohostSubscriber() {
 				if dgs == nil || !dgs.GameStateMsg.Exists() {
 					continue
 				}
-				bot.DispatchRefreshOrEdit(dgs, gsr, bot.StorageInterface.GetGuildSettings(req.GuildID))
+				// 1 時間を過ぎたメッセージは編集できず、DispatchRefreshOrEdit が作り直す (削除+送信)。
+				// 自動ホストの状態変化のたびに作り直すとメッセージが飛び回るので、作り直しはゲームイベント側に任せる
+				if dgs.shouldRefresh() {
+					continue
+				}
+				go bot.DispatchRefreshOrEdit(dgs, gsr, bot.StorageInterface.GetGuildSettings(req.GuildID))
 			}
 			_ = sub.Close()
 			log.Println("autohost: refresh subscription closed; retrying in 5s")
 			time.Sleep(5 * time.Second)
 		}
-	}()
+	}
 }

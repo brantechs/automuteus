@@ -57,12 +57,18 @@ var DeferredComponents = make(map[string][]discordgo.MessageComponent)
 var DeferredEditsLock = sync.Mutex{}
 
 // Note this is not a pointer; we never expect the underlying DGS to change on an edit
-func (dgs GameState) dispatchEdit(s *discordgo.Session, me *discordgo.MessageEmbed) (newEdit bool) {
+func (dgs GameState) dispatchEdit(s *discordgo.Session, me *discordgo.MessageEmbed, components []discordgo.MessageComponent) (newEdit bool) {
 	if !ValidFields(me) {
 		return false
 	}
 
 	DeferredEditsLock.Lock()
+	// autohost: embed と同じロックの中で部品も差し替える (別々に書くと古い embed と新しい部品が組になる)
+	if components != nil {
+		DeferredComponents[dgs.GameStateMsg.MessageID] = components
+	} else {
+		delete(DeferredComponents, dgs.GameStateMsg.MessageID)
+	}
 
 	// if it isn't found, then start the worker to wait to start it (this is a UNIQUE edit)
 	if _, ok := DeferredEdits[dgs.GameStateMsg.MessageID]; !ok {
@@ -95,6 +101,7 @@ func ValidFields(me *discordgo.MessageEmbed) bool {
 func RemovePendingDGSEdit(messageID string) {
 	DeferredEditsLock.Lock()
 	delete(DeferredEdits, messageID)
+	delete(DeferredComponents, messageID)
 	DeferredEditsLock.Unlock()
 }
 
@@ -134,13 +141,12 @@ func (bot *Bot) DispatchRefreshOrEdit(readOnlyDgs *GameState, dgsRequest GameSta
 	if readOnlyDgs.shouldRefresh() {
 		bot.RefreshGameStateMessage(dgsRequest, sett)
 	} else {
+		var components []discordgo.MessageComponent
 		if autohostEnabledFor(readOnlyDgs.GuildID) {
-			components := gameStateComponents(readOnlyDgs.GuildID)
-			DeferredEditsLock.Lock()
-			DeferredComponents[readOnlyDgs.GameStateMsg.MessageID] = components
-			DeferredEditsLock.Unlock()
+			// autohost 有効なサーバーでは常に部品付きで編集する (部品なしの編集は色の SelectMenu ごと消しうる)
+			components = gameStateComponents(readOnlyDgs.GuildID)
 		}
-		edited := readOnlyDgs.dispatchEdit(bot.PrimarySession, bot.gameStateResponse(readOnlyDgs, sett))
+		edited := readOnlyDgs.dispatchEdit(bot.PrimarySession, bot.gameStateResponse(readOnlyDgs, sett), components)
 		if edited {
 			server.RecordDiscordRequests(bot.RedisInterface.client, server.MessageEdit, 1)
 		}

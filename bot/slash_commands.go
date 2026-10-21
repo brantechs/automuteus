@@ -79,6 +79,7 @@ func (bot *Bot) handleInteractionCreate(s *discordgo.Session, i *discordgo.Inter
 				}
 				followUpMsg, err = s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 					Content: Hourglass,
+					Flags:   1 << 6, // ephemeral (最初の待ち応答と揃える)
 				})
 				if err != nil {
 					log.Println("Error creating followup message: ", err)

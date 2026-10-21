@@ -107,6 +107,7 @@ func MakeAndStartBot(version, commit, botToken, topGGToken, url, emojiGuildID st
 	token.WaitForToken(bot.RedisInterface.client, botToken)
 	token.LockForToken(bot.RedisInterface.client, botToken)
 	// Open a websocket connection to Discord and begin listening.
+	bot.InitAutohost()
 	err = dg.Open()
 	if err != nil {
 		log.Println("Could not connect Bot to the Discord Servers with error:", err)
@@ -249,6 +250,9 @@ func (bot *Bot) forceEndGame(gsr GameStateRequest) {
 		lock, dgs = bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
 	}
 
+	if dgs != nil && dgs.ConnectCode != "" {
+		bot.autohostUnlink(dgs.GuildID, dgs.ConnectCode)
+	}
 	deleted := dgs.DeleteGameStateMsg(bot.PrimarySession, true)
 	if deleted {
 		go server.RecordDiscordRequests(bot.RedisInterface.client, server.MessageCreateDelete, 1)
