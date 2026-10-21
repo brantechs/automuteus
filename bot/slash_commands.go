@@ -156,6 +156,11 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 		return softbanResponse(banned, sett)
 	}
 
+	// fork: /tohk (TOH-K の正しい戦績。tohk.go)
+	if i.Type == discordgo.InteractionApplicationCommand && i.ApplicationCommandData().Name == TohkCommand.Name {
+		return bot.handleTohkCommand(i, sett)
+	}
+
 	g, err := s.State.Guild(i.GuildID)
 	if err != nil {
 		log.Println(err)

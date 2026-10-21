@@ -68,6 +68,9 @@ func (bot *Bot) StartAPIServer(port string) {
 
 	r.GET("/open/link", handleGetOpenAmongUsCapture(bot))
 
+	// fork: TOH-K の試合結果 (AutoLobby の GameResult.cs が送る。tohk.go)
+	r.POST("/tohk/result", bot.handleTohkResult())
+
 	// TODO add endpoints for notable player information, like total games played, num wins, etc
 
 	// TODO properly configure CORS -_-
