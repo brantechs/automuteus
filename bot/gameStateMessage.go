@@ -51,6 +51,9 @@ func (dgs *GameState) DeleteGameStateMsg(s *discordgo.Session, reset bool) bool 
 }
 
 var DeferredEdits = make(map[string]*discordgo.MessageEmbed)
+
+// autohost: 編集時に一緒に渡す部品 (メッセージID → components)。ボタンの disabled 切替のため
+var DeferredComponents = make(map[string][]discordgo.MessageComponent)
 var DeferredEditsLock = sync.Mutex{}
 
 // Note this is not a pointer; we never expect the underlying DGS to change on an edit
@@ -101,25 +104,21 @@ func deferredEditWorker(s *discordgo.Session, channelID, messageID string) {
 	DeferredEditsLock.Lock()
 	me := DeferredEdits[messageID]
 	delete(DeferredEdits, messageID)
+	components, hasComponents := DeferredComponents[messageID]
+	delete(DeferredComponents, messageID)
 	DeferredEditsLock.Unlock()
 
 	if me != nil {
-		editMessageEmbed(s, channelID, messageID, me)
+		if hasComponents {
+			editMessageEmbedComponents(s, channelID, messageID, me, components)
+		} else {
+			editMessageEmbed(s, channelID, messageID, me)
+		}
 	}
 }
 
 func (dgs *GameState) CreateMessage(s *discordgo.Session, me *discordgo.MessageEmbed, channelID string, authorID string) bool {
-	components := []discordgo.MessageComponent{
-		discordgo.ActionsRow{
-			Components: []discordgo.MessageComponent{
-				discordgo.SelectMenu{
-					CustomID:    colorSelectID,
-					Placeholder: "Select your in-game color",
-					Options:     EmojisToSelectMenuOptions(GlobalAlivenessEmojis[true], X),
-				},
-			},
-		},
-	}
+	components := gameStateComponents(dgs.GuildID)
 	msg := sendEmbedWithComponents(s, channelID, me, components)
 	if msg != nil {
 		dgs.GameStateMsg.LeaderID = authorID
@@ -135,6 +134,12 @@ func (bot *Bot) DispatchRefreshOrEdit(readOnlyDgs *GameState, dgsRequest GameSta
 	if readOnlyDgs.shouldRefresh() {
 		bot.RefreshGameStateMessage(dgsRequest, sett)
 	} else {
+		if autohostEnabledFor(readOnlyDgs.GuildID) {
+			components := gameStateComponents(readOnlyDgs.GuildID)
+			DeferredEditsLock.Lock()
+			DeferredComponents[readOnlyDgs.GameStateMsg.MessageID] = components
+			DeferredEditsLock.Unlock()
+		}
 		edited := readOnlyDgs.dispatchEdit(bot.PrimarySession, bot.gameStateResponse(readOnlyDgs, sett))
 		if edited {
 			server.RecordDiscordRequests(bot.RedisInterface.client, server.MessageEdit, 1)

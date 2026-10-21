@@ -145,6 +145,8 @@ func MakeAndStartBot(version, commit, botToken, topGGToken, url, emojiGuildID st
 		log.Println("No TOP_GG_TOKEN provided")
 	}
 
+	bot.StartAutohostSubscriber()
+
 	return &bot
 }
 

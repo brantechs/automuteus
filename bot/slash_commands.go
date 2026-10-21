@@ -145,6 +145,11 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 		return command.DmResponse(sett)
 	}
 
+	// autohost: 自動ホストのボタンは既存のレート制限 (超過でソフトBAN) を通さず、2 秒以内に応答する
+	if i.Type == discordgo.InteractionMessageComponent && strings.HasPrefix(i.MessageComponentData().CustomID, autohostButtonPrefix) {
+		return bot.handleAutohostButton(i, sett)
+	}
+
 	if redis_common.IsUserRateLimitedGeneral(bot.RedisInterface.client, i.Member.User.ID) {
 		banned := redis_common.IncrementRateLimitExceed(bot.RedisInterface.client, i.Member.User.ID)
 		return softbanResponse(banned, sett)
@@ -302,6 +307,7 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 				hyperlink, apiHyperlink, minimalURL := formCaptureURL(bot.url, dgs.ConnectCode)
 
 				bot.handleGameStartMessage(i.GuildID, i.ChannelID, voiceChannelID, i.Member.User.ID, sett, g, dgs.ConnectCode)
+				bot.autohostLink(i.GuildID, dgs.ConnectCode)
 
 				return command.NewResponse(status, command.NewInfo{
 					Hyperlink:    hyperlink,
@@ -365,6 +371,7 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 					v <- true
 				}
 				delete(bot.EndGameChannels, dgs.ConnectCode)
+				bot.autohostUnlink(dgs.GuildID, dgs.ConnectCode)
 
 				err = bot.applyToAll(dgs, false, false)
 				if err != nil {
