@@ -160,30 +160,39 @@ func (st *autohostStatus) usedElsewhere(guildID string) bool {
 func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow {
 	ready := st != nil && st.Busy == nil && !st.usedElsewhere(guildID)
 	running := ready && st.Host.GameRunning
-	// 停止中: ホストを起動して部屋を立てる / 起動済みでメニューに居る: 部屋建てだけ / それ以外 (ロビー・試合中・準備中): 押せない
-	startEnabled := ready && (!running || st.Lobby.State == "menu")
+	lobby := ready && st.inLobby()
+	// 部屋ボタンは 1 つ: 停止中 → ホストを起動して部屋を立てる / メニュー → 部屋建てだけ / ロビー → 立て直し
+	// それ以外 (試合中・準備中・起動中) は押せない。どの操作になるかは押した時点の状態で決める (handleAutohostButton)
+	startEnabled := ready && (!running || st.Lobby.State == "menu" || lobby)
+	roomLabel, roomEmoji := "部屋を立てる", "▶️"
+	if lobby {
+		roomLabel, roomEmoji = "部屋を立て直す", "🔄"
+	}
 	// discordgo v0.27.1 の Button.Emoji は値型 (omitempty 無し) で、未指定だと "emoji":{} が送られて
 	// Discord が COMPONENT_INVALID_EMOJI で弾く。絵文字は必ず Emoji に入れる
 	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: "部屋を立てる", Emoji: discordgo.ComponentEmoji{Name: "▶️"}, Style: discordgo.PrimaryButton,
+		discordgo.Button{Label: roomLabel, Emoji: discordgo.ComponentEmoji{Name: roomEmoji}, Style: discordgo.PrimaryButton,
 			CustomID: autohostBtnStart, Disabled: !startEnabled},
 		discordgo.Button{Label: "試合開始", Emoji: discordgo.ComponentEmoji{Name: "🎮"}, Style: discordgo.SuccessButton,
-			CustomID: autohostBtnGameStart, Disabled: !st.inLobby() || !ready},
-		discordgo.Button{Label: "立て直し", Emoji: discordgo.ComponentEmoji{Name: "🔄"}, Style: discordgo.SecondaryButton,
-			CustomID: autohostBtnRecreate, Disabled: !st.inLobby() || !ready},
-		discordgo.Button{Label: "停止", Emoji: discordgo.ComponentEmoji{Name: "⏹️"}, Style: discordgo.DangerButton,
+			CustomID: autohostBtnGameStart, Disabled: !lobby},
+		// ホスト終了: Bragame の自動ホスト用 Among Us を終了する (部屋は消える。設定の同期も再開する)
+		discordgo.Button{Label: "ホスト終了", Emoji: discordgo.ComponentEmoji{Name: "⏹️"}, Style: discordgo.DangerButton,
 			CustomID: autohostBtnStop, Disabled: !running},
 	}}
 }
 
 // gameStateComponents: game state メッセージの部品 (色の紐づけ + 自動ホストのボタン)。作成と編集の両方で使う
 func gameStateComponents(guildID string) []discordgo.MessageComponent {
+	placeholder := "Select your in-game color" // upstream はロケールを通さず英語固定
+	if autohostEnabledFor(guildID) {
+		placeholder = "ゲームで使っている色を選んでください"
+	}
 	components := []discordgo.MessageComponent{
 		discordgo.ActionsRow{
 			Components: []discordgo.MessageComponent{
 				discordgo.SelectMenu{
 					CustomID:    colorSelectID,
-					Placeholder: "Select your in-game color",
+					Placeholder: placeholder,
 					Options:     EmojisToSelectMenuOptions(GlobalAlivenessEmojis[true], X),
 				},
 			},
@@ -472,10 +481,16 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	}
 
 	action := strings.TrimPrefix(customID, autohostButtonPrefix)
-	label := map[string]string{"start": "部屋を立てる", "gamestart": "試合開始", "recreate": "立て直し", "stop": "停止"}[action]
-	if action == "start" && st.Host.GameRunning {
-		action = "room" // 起動済みでメニューに居るとき: 部屋建てだけ
+	if action == "start" {
+		switch {
+		case st.inLobby():
+			action = "recreate" // ロビーに居るとき: 立て直し
+		case st.Host.GameRunning:
+			action = "room" // 起動済みでメニューに居るとき: 部屋建てだけ
+		}
 	}
+	label := map[string]string{"start": "部屋を立てる", "room": "部屋を立てる", "gamestart": "試合開始",
+		"recreate": "部屋を立て直す", "stop": "ホスト終了"}[action]
 	// redis が詰まっても 2 秒の応答期限を守れるよう、publish は待たない
 	go bot.autohostPublish(autohostChActions, map[string]interface{}{
 		"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,

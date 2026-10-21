@@ -144,7 +144,7 @@ func lobbyMetaEmbedFields(room, region string, author, voiceChannelID string, pl
 				Other: "🔒 ROOM CODE",
 			}),
 			Value:  room,
-			Inline: false,
+			Inline: true, // fork: ROOM CODE と REGION を横並びに
 		})
 	}
 	if region != "" {
@@ -154,8 +154,13 @@ func lobbyMetaEmbedFields(room, region string, author, voiceChannelID string, pl
 				Other: "🌎 REGION",
 			}),
 			Value:  region,
-			Inline: false,
+			Inline: true, // fork: ROOM CODE と REGION を横並びに
 		})
+	}
+
+	if room != "" && region != "" {
+		// fork: 次の行 (プレイヤー一覧) が REGION の右に詰まらないよう 3 列目を空ける
+		gameInfoFields = append(gameInfoFields, &discordgo.MessageEmbedField{Name: "\u200B", Value: "\u200B", Inline: true})
 	}
 
 	return gameInfoFields

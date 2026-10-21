@@ -32,19 +32,20 @@ func TestAutohostButtons(t *testing.T) {
 		raw  string
 		want map[string]bool // CustomID -> disabled
 	}{
-		{"no status", "", map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: true}},
+		{"no status", "", map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
 		{"stopped", `{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`,
-			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: true}},
+			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnStop: true}},
 		{"starting", `{"busy":"starting","host":{"game_running":false},"lobby":{}}`,
-			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: true}},
+			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
+		// ロビーでは部屋ボタンが「部屋を立て直す」になって押せる
 		{"lobby", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","code":"ECVRTG"}}`,
-			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: false, autohostBtnRecreate: false, autohostBtnStop: false}},
+			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: false, autohostBtnStop: false}},
 		{"menu", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"menu"}}`,
-			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: false}},
+			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"ingame", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"ingame"}}`,
-			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: false}},
+			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"other guild", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"},"link":{"guild_id":"999","connect_code":"AAAAAAAA"}}`,
-			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnRecreate: true, autohostBtnStop: true}},
+			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
 	}
 	for _, c := range cases {
 		var st *autohostStatus
@@ -57,6 +58,22 @@ func TestAutohostButtons(t *testing.T) {
 				t.Errorf("%s: %s disabled=%v, want %v", c.name, id, got[id], want)
 			}
 		}
+	}
+}
+
+func TestAutohostRoomButtonLabel(t *testing.T) {
+	labels := func(raw string) []string {
+		var out []string
+		for _, c := range autohostComponents(parseStatus(t, raw), "111").Components {
+			out = append(out, c.(discordgo.Button).Label)
+		}
+		return out
+	}
+	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "部屋を立て直す" || len(got) != 3 {
+		t.Fatalf("lobby: %v", got)
+	}
+	if got := labels(`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`); got[0] != "部屋を立てる" || got[2] != "ホスト終了" {
+		t.Fatalf("stopped: %v", got)
 	}
 }
 
