@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -244,6 +245,8 @@ func discordMainWrapper() error {
 				log.Printf("Registering %d commands in guild %s (bulk overwrite)\n", len(command.All), guild)
 			}
 			cmds, err := registerSlashCommands(bots[0].PrimarySession, guild)
+			// 作成上限で作れなかったコマンドは、上限が空き次第 1 件ずつ作る (/new を優先)
+			go ensureSlashCommands(bots[0].PrimarySession, guild)
 			if err != nil {
 				log.Printf("Cannot register commands in guild %q: %v", guild, err)
 				continue
@@ -353,4 +356,72 @@ func registerSlashCommands(primary *discordgo.Session, guild string) ([]*discord
 	}
 	log.Printf("guild %s: could not create %v (%v); updated the %d existing commands only", guild, missing, err, len(subset))
 	return cmds, nil
+}
+
+// slashCommandPriority: 作成上限で一部しか作れないときに先に作るもの
+var slashCommandPriority = []string{"new", "end", "refresh", "link", "unlink", "pause", "help", "stats", "settings", "map", "info", "privacy"}
+
+// ensureSlashCommands: guild に無いコマンドを 1 件ずつ作る。作成上限 (429) なら Discord の指示した時間
+// (1〜30 分に丸める) 待ってからやり直す。全部そろったら終わる
+func ensureSlashCommands(primary *discordgo.Session, guild string) {
+	rest := func() *discordgo.Session {
+		s, _ := discordgo.New(primary.Token)
+		s.ShouldRetryOnRateLimit = false
+		return s
+	}
+	appID := primary.State.User.ID
+	rank := map[string]int{}
+	for i, n := range slashCommandPriority {
+		rank[n] = i + 1
+	}
+	order := func(name string) int {
+		if r, ok := rank[name]; ok {
+			return r
+		}
+		return len(slashCommandPriority) + 1
+	}
+	wait := func(err error) {
+		d := 10 * time.Minute
+		var rl *discordgo.RateLimitError
+		if errors.As(err, &rl) && rl.RateLimit != nil && rl.TooManyRequests != nil {
+			d = rl.TooManyRequests.RetryAfter + 5*time.Second
+		}
+		if d < time.Minute {
+			d = time.Minute
+		} else if d > 30*time.Minute {
+			d = 30 * time.Minute
+		}
+		time.Sleep(d)
+	}
+	for attempt := 0; attempt < 500; attempt++ {
+		existing, err := rest().ApplicationCommands(appID, guild)
+		if err != nil {
+			wait(err)
+			continue
+		}
+		have := map[string]bool{}
+		for _, c := range existing {
+			have[c.Name] = true
+		}
+		var missing []*discordgo.ApplicationCommand
+		for _, c := range command.All {
+			if !have[c.Name] {
+				missing = append(missing, c)
+			}
+		}
+		if len(missing) == 0 {
+			if attempt > 0 {
+				log.Printf("guild %s: all slash commands are registered now", guild)
+			}
+			return
+		}
+		sort.SliceStable(missing, func(i, j int) bool { return order(missing[i].Name) < order(missing[j].Name) })
+		c := missing[0]
+		if _, err := rest().ApplicationCommandCreate(appID, guild, c); err != nil {
+			log.Printf("guild %s: creating /%s failed (%d missing), will retry: %v", guild, c.Name, len(missing), err)
+			wait(err)
+			continue
+		}
+		log.Printf("guild %s: created /%s (%d more missing)", guild, c.Name, len(missing)-1)
+	}
 }
