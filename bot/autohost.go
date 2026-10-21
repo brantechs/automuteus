@@ -406,6 +406,32 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	return reply(fmt.Sprintf("受け付けました: %s (結果は上のメッセージに出ます)", label))
 }
 
+// autohostNewResponse: 自動ホスト連携が有効なサーバーの /new の返信。AmongUsCapture のリンクは
+// 自動ホストでは使わず、AutoMuteUs を使い慣れた人ほど混乱するので出さない (本人だけに見える)
+func (bot *Bot) autohostNewResponse(guildID string) *discordgo.InteractionResponse {
+	st := bot.autohostReadStatus()
+	var msg string
+	switch {
+	case st == nil:
+		msg = "🤖 自動ホスト連携は有効ですが、自動ホスト bot に接続できません。Bragame の状態を確認してください。"
+	case st.usedElsewhere(guildID):
+		msg = "⚠️ 自動ホストは別のサーバーで使用中です。そちらで停止してから、もう一度 /new してください。"
+	case st.Busy != nil && *st.Busy == "starting":
+		msg = "⏳ 自動ホストを起動しています。このまま待つと部屋が立ち、下のメッセージに部屋コードが表示されます。"
+	case st.inLobby():
+		msg = fmt.Sprintf("🟢 自動ホストの部屋 `%s` が立っています。人がそろったら、下のメッセージの「🎮 ゲーム開始」を押してください。", st.Lobby.Code)
+	case st.Host.GameRunning:
+		msg = "⏳ 自動ホストは起動中です。部屋が立つと、下のメッセージに部屋コードが表示されます。"
+	default:
+		msg = "🤖 自動ホストと連携しました。\n下のメッセージの「▶️ 部屋を立てる」を押すと、Bragame でホストが起動して部屋が立ちます (1〜3 分)。" +
+			"部屋コードとプレイヤーは下のメッセージに表示されます。AmongUsCapture は不要です。"
+	}
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral, Content: msg},
+	}
+}
+
 var autohostSubscribeOnce sync.Once
 
 // InitAutohost: ハンドラ登録/Open より前に呼ぶ (起動直後に作られるメッセージにもボタンを付けるため)

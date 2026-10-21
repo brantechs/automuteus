@@ -309,6 +309,9 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 
 				bot.handleGameStartMessage(i.GuildID, i.ChannelID, voiceChannelID, i.Member.User.ID, sett, g, dgs.ConnectCode)
 				bot.autohostLink(i.GuildID, dgs.ConnectCode)
+				if autohostEnabledFor(i.GuildID) {
+					return bot.autohostNewResponse(i.GuildID)
+				}
 
 				return command.NewResponse(status, command.NewInfo{
 					Hyperlink:    hyperlink,
