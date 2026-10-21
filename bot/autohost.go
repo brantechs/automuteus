@@ -40,6 +40,9 @@ const (
 	autohostBtnGameStart = "autohost:gamestart"
 	autohostBtnRecreate  = "autohost:recreate"
 	autohostBtnStop      = "autohost:stop"
+	// 立て直し・ホスト終了は押した人だけに見える確認メッセージを挟む (Discord のボタンには確認ダイアログが無い)
+	autohostConfirmPrefix = "autohost:confirm:"
+	autohostBtnCancel     = "autohost:cancel"
 
 	// Discord の field value 上限は 1024 文字
 	autohostFieldMax = 1000
@@ -83,8 +86,8 @@ type autohostStatus struct {
 		SteamPersona       string `json:"steam_persona"`
 	} `json:"host"`
 	Lobby struct {
-		State     string `json:"state"`
-		Code      string `json:"code"`
+		State string `json:"state"`
+		Code  string `json:"code"`
 		// 数値は AutoLobby/Python 側で float になっても読めるよう float64 で受ける
 		Ping      *float64 `json:"ping"`
 		Players   *float64 `json:"players"`
@@ -463,6 +466,19 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		}
 	}
 	customID := i.MessageComponentData().CustomID
+	// 確認メッセージ上のボタン (実行・キャンセル) は、その確認メッセージ自体を書き換えて応答する
+	confirmed := strings.HasPrefix(customID, autohostConfirmPrefix)
+	if confirmed || customID == autohostBtnCancel {
+		reply = func(msg string) *discordgo.InteractionResponse {
+			return &discordgo.InteractionResponse{
+				Type: discordgo.InteractionResponseUpdateMessage,
+				Data: &discordgo.InteractionResponseData{Content: msg, Components: []discordgo.MessageComponent{}},
+			}
+		}
+	}
+	if customID == autohostBtnCancel {
+		return reply("キャンセルしました。")
+	}
 	if !autohostEnabledFor(i.GuildID) {
 		return reply("このサーバーでは自動ホスト連携が無効です。")
 	}
@@ -487,7 +503,11 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	if !allowed {
 		return reply("⚠️ 自動ホストを操作する権限がありません。")
 	}
-	action := strings.TrimPrefix(customID, autohostButtonPrefix)
+	action := strings.TrimPrefix(strings.TrimPrefix(customID, autohostConfirmPrefix), autohostButtonPrefix)
+	if action == "stop" && !confirmed {
+		return autohostConfirmResponse("stop",
+			"⚠️ **ホストを終了しますか？**\n部屋は消え、BranMuteUs のゲームも終了します (/end と同じ)。", "ホスト終了")
+	}
 	st := bot.autohostReadStatus()
 	if action == "stop" && (st == nil || st.usedElsewhere(i.GuildID)) {
 		// 自動ホスト bot に届かない・別サーバーで使用中でも、このサーバーの BranMuteUs のゲームは /end と同じように終わらせる
@@ -515,6 +535,15 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 			action = "room" // 起動済みでメニューに居るとき: 部屋建てだけ
 		}
 	}
+	if action == "recreate" {
+		if !st.inLobby() {
+			return reply("ℹ️ 部屋の状態が変わったので、立て直しは取り消しました。")
+		}
+		if !confirmed {
+			return autohostConfirmResponse("recreate", fmt.Sprintf(
+				"⚠️ **部屋 `%s` を立て直しますか？**\n今の部屋は閉じられ、部屋コードが変わります。参加中の人は入り直しになります。", st.Lobby.Code), "立て直す")
+		}
+	}
 	label := map[string]string{"start": "部屋を立てる", "room": "部屋を立てる", "gamestart": "試合開始",
 		"recreate": "部屋を立て直す", "stop": "ホスト終了 (BranMuteUs のゲームも終了します)"}[action]
 	if action == "stop" {
@@ -530,6 +559,23 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
 	})
 	return reply(fmt.Sprintf("受け付けました: %s (結果は上のメッセージに出ます)", label))
+}
+
+// autohostConfirmResponse: 押した人だけに見える確認メッセージ。実行すると autohost:confirm:<action> が届く
+func autohostConfirmResponse(action, question, label string) *discordgo.InteractionResponse {
+	return &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags:   1 << 6,
+			Content: question,
+			Components: []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+				discordgo.Button{Label: label, Emoji: discordgo.ComponentEmoji{Name: "⚠️"}, Style: discordgo.DangerButton,
+					CustomID: autohostConfirmPrefix + action},
+				discordgo.Button{Label: "キャンセル", Emoji: discordgo.ComponentEmoji{Name: "✖️"}, Style: discordgo.SecondaryButton,
+					CustomID: autohostBtnCancel},
+			}}},
+		},
+	}
 }
 
 // autohostNewResponse: 自動ホスト連携が有効なサーバーの /new の返信。AmongUsCapture のリンクは

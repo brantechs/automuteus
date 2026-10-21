@@ -111,12 +111,12 @@ func TestAutohostStatusAcceptsFloats(t *testing.T) {
 
 func TestAutohostStateLine(t *testing.T) {
 	cases := map[string]string{
-		`{"busy":"starting","host":{},"lobby":{}}`:                                                                         "起動中",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"signing-in"}}`:                                     "サインイン",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"booting"}}`:                                        "TOH-K を起動",
+		`{"busy":"starting","host":{},"lobby":{}}`:                                                                           "起動中",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"signing-in"}}`:                                      "サインイン",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"booting"}}`:                                         "TOH-K を起動",
 		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":false,"recreates":2,"ping":49}}`: "3部屋目",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":true}}`:                         "ロビーで待機中",
-		`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`:                                       "停止中",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":true}}`:                          "ロビーで待機中",
+		`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`:                                        "停止中",
 	}
 	for raw, want := range cases {
 		if got := autohostStateLine(parseStatus(t, raw), "111"); !strings.Contains(got, want) {
@@ -170,5 +170,28 @@ func TestAutohostEnabledFor(t *testing.T) {
 	autohostGuilds = map[string]bool{"2": true}
 	if autohostEnabledFor("1") || !autohostEnabledFor("2") {
 		t.Fatal("guild allow list not honored")
+	}
+}
+
+// 確認メッセージのボタンは autohost: で始まり (slash_commands.go の振り分け)、絵文字を必ず持つ
+func TestAutohostConfirmResponse(t *testing.T) {
+	r := autohostConfirmResponse("stop", "q", "ホスト終了")
+	if r.Data.Flags != 1<<6 {
+		t.Fatalf("confirm must be ephemeral")
+	}
+	row := r.Data.Components[0].(discordgo.ActionsRow)
+	ids := []string{}
+	for _, c := range row.Components {
+		b := c.(discordgo.Button)
+		if b.Emoji.Name == "" || !strings.HasPrefix(b.CustomID, autohostButtonPrefix) {
+			t.Errorf("bad button %+v", b)
+		}
+		ids = append(ids, b.CustomID)
+	}
+	if ids[0] != "autohost:confirm:stop" || ids[1] != autohostBtnCancel {
+		t.Fatalf("ids %v", ids)
+	}
+	if a := strings.TrimPrefix(strings.TrimPrefix(ids[0], autohostConfirmPrefix), autohostButtonPrefix); a != "stop" {
+		t.Fatalf("action %q", a)
 	}
 }
