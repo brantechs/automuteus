@@ -308,9 +308,10 @@ func (bot *Bot) slashCommandHandler(s *discordgo.Session, i *discordgo.Interacti
 				hyperlink, apiHyperlink, minimalURL := formCaptureURL(bot.url, dgs.ConnectCode)
 
 				bot.handleGameStartMessage(i.GuildID, i.ChannelID, voiceChannelID, i.Member.User.ID, sett, g, dgs.ConnectCode)
-				bot.autohostLink(i.GuildID, dgs.ConnectCode)
+				autohostOK := autohostEnabledFor(i.GuildID) && bot.autohostAllowed(i, sett)
+				bot.autohostLink(i.GuildID, dgs.ConnectCode, i.Member.User.ID, autohostOK)
 				if autohostEnabledFor(i.GuildID) {
-					return bot.autohostNewResponse(i.GuildID)
+					return bot.autohostNewResponse(i.GuildID, autohostOK)
 				}
 
 				return command.NewResponse(status, command.NewInfo{

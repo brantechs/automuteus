@@ -315,9 +315,14 @@ func (bot *Bot) autohostPublish(channel string, payload map[string]interface{}) 
 	}
 }
 
-func (bot *Bot) autohostLink(guildID, connectCode string) {
+// autohostLink: /new で発行した connect code を自動ホスト bot に渡す。autostart=true なら、ホストが止まっていて
+// /new した人に操作権限があるとき、自動ホスト bot がそのままホストを起動する
+func (bot *Bot) autohostLink(guildID, connectCode, userID string, allowed bool) {
 	if autohostEnabledFor(guildID) {
-		go bot.autohostPublish(autohostChLink, map[string]interface{}{"guild_id": guildID, "connect_code": connectCode})
+		go bot.autohostPublish(autohostChLink, map[string]interface{}{
+			"guild_id": guildID, "connect_code": connectCode,
+			"autostart": true, "user_id": userID, "allowed": allowed,
+		})
 	}
 }
 
@@ -408,10 +413,16 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 
 // autohostNewResponse: 自動ホスト連携が有効なサーバーの /new の返信。AmongUsCapture のリンクは
 // 自動ホストでは使わず、AutoMuteUs を使い慣れた人ほど混乱するので出さない (本人だけに見える)
-func (bot *Bot) autohostNewResponse(guildID string) *discordgo.InteractionResponse {
+func (bot *Bot) autohostNewResponse(guildID string, allowed bool) *discordgo.InteractionResponse {
 	st := bot.autohostReadStatus()
 	var msg string
 	switch {
+	case st != nil && !st.usedElsewhere(guildID) && st.Busy == nil && !st.Host.GameRunning && st.AgentOK && allowed:
+		// /new の link で自動ホスト bot が起動を始める (autohostLink の autostart)
+		msg = "⏳ 自動ホストを起動しています。このまま待つと部屋が立ちます (1〜3 分)。\n" +
+			"部屋コードとプレイヤーは下のメッセージに表示されます。AmongUsCapture は不要です。"
+	case st != nil && !st.Host.GameRunning && st.Busy == nil && !allowed:
+		msg = "🤖 自動ホストと連携しました。ホストを起動する権限がないため、権限のある人に「▶️ 部屋を立てる」を押してもらってください。"
 	case st == nil:
 		msg = "🤖 自動ホスト連携は有効ですが、自動ホスト bot に接続できません。Bragame の状態を確認してください。"
 	case st.usedElsewhere(guildID):
