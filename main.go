@@ -243,7 +243,7 @@ func discordMainWrapper() error {
 			} else {
 				log.Printf("Registering %d commands in guild %s (bulk overwrite)\n", len(command.All), guild)
 			}
-			cmds, err := bots[0].PrimarySession.ApplicationCommandBulkOverwrite(bots[0].PrimarySession.State.User.ID, guild, command.All)
+			cmds, err := registerSlashCommands(bots[0].PrimarySession, guild)
 			if err != nil {
 				log.Printf("Cannot register commands in guild %q: %v", guild, err)
 				continue
@@ -311,4 +311,46 @@ func parseShards(str string, maxShards int) (shards, error) {
 		shards = append(shards, uint8(v))
 	}
 	return shards, nil
+}
+
+// registerSlashCommands: guild のコマンドを command.All で bulk overwrite する。
+// 本体のセッションは 429 を無限に待ち直すので (作成上限の 429 だと登録が止まったままになる)、
+// 再試行しない REST 専用セッションを使う。作成上限に達していたら、既にあるコマンドだけ更新する
+func registerSlashCommands(primary *discordgo.Session, guild string) ([]*discordgo.ApplicationCommand, error) {
+	rest := func() *discordgo.Session {
+		s, _ := discordgo.New(primary.Token)
+		s.ShouldRetryOnRateLimit = false
+		return s
+	}
+	appID := primary.State.User.ID
+	cmds, err := rest().ApplicationCommandBulkOverwrite(appID, guild, command.All)
+	if err == nil {
+		return cmds, nil
+	}
+	existing, err2 := rest().ApplicationCommands(appID, guild)
+	if err2 != nil {
+		return nil, fmt.Errorf("%v (and listing existing commands failed: %v)", err, err2)
+	}
+	have := map[string]bool{}
+	for _, c := range existing {
+		have[c.Name] = true
+	}
+	var subset []*discordgo.ApplicationCommand
+	var missing []string
+	for _, c := range command.All {
+		if have[c.Name] {
+			subset = append(subset, c)
+		} else {
+			missing = append(missing, c.Name)
+		}
+	}
+	if len(subset) == 0 {
+		return nil, fmt.Errorf("%v (no existing commands to update)", err)
+	}
+	cmds, err2 = rest().ApplicationCommandBulkOverwrite(appID, guild, subset)
+	if err2 != nil {
+		return nil, fmt.Errorf("%v (and updating existing commands failed: %v)", err, err2)
+	}
+	log.Printf("guild %s: could not create %v (%v); updated the %d existing commands only", guild, missing, err, len(subset))
+	return cmds, nil
 }
