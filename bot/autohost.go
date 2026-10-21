@@ -515,6 +515,23 @@ func (bot *Bot) autohostNewResponse(guildID string, allowed bool) *discordgo.Int
 	}
 }
 
+var (
+	autohostRecreateLock sync.Mutex
+	autohostLastRecreate = map[string]time.Time{}
+)
+
+const autohostRecreateInterval = 10 * time.Minute
+
+func autohostRecreateAllowed(guildID string) bool {
+	autohostRecreateLock.Lock()
+	defer autohostRecreateLock.Unlock()
+	if time.Since(autohostLastRecreate[guildID]) < autohostRecreateInterval {
+		return false
+	}
+	autohostLastRecreate[guildID] = time.Now()
+	return true
+}
+
 var autohostSubscribeOnce sync.Once
 
 // InitAutohost: ハンドラ登録/Open より前に呼ぶ (起動直後に作られるメッセージにもボタンを付けるため)
@@ -555,9 +572,9 @@ func (bot *Bot) autohostRefreshLoop() {
 				if dgs == nil || !dgs.GameStateMsg.Exists() {
 					continue
 				}
-				// 1 時間を過ぎたメッセージは編集できず、DispatchRefreshOrEdit が作り直す (削除+送信)。
-				// 自動ホストの状態変化のたびに作り直すとメッセージが飛び回るので、作り直しはゲームイベント側に任せる
-				if dgs.shouldRefresh() {
+				// 1 時間を過ぎたメッセージは DispatchRefreshOrEdit が作り直す (削除+送信)。自動ホストの状態変化の
+				// たびに作り直すとメッセージが飛び回るので、自動ホスト由来の作り直しは同じサーバーで 10 分に 1 回まで
+				if dgs.shouldRefresh() && !autohostRecreateAllowed(req.GuildID) {
 					continue
 				}
 				go bot.DispatchRefreshOrEdit(dgs, gsr, bot.StorageInterface.GetGuildSettings(req.GuildID))

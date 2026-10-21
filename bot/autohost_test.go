@@ -112,6 +112,18 @@ func TestConnectionPayloadLinked(t *testing.T) {
 	}
 }
 
+func TestAutohostRecreateRateLimited(t *testing.T) {
+	if !autohostRecreateAllowed("g-test") {
+		t.Fatal("first recreate should be allowed")
+	}
+	if autohostRecreateAllowed("g-test") {
+		t.Fatal("second recreate within the interval should be refused")
+	}
+	if !autohostRecreateAllowed("g-other") {
+		t.Fatal("rate limit is per guild")
+	}
+}
+
 func TestAutohostIDSet(t *testing.T) {
 	s := autohostIDSet(" 1, 2 ,,3")
 	if len(s) != 3 || !s["1"] || !s["2"] || !s["3"] {
