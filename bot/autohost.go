@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/automuteus/automuteus/v8/pkg/discord"
+	"github.com/automuteus/automuteus/v8/pkg/game"
 	"github.com/automuteus/automuteus/v8/pkg/settings"
 	"github.com/bwmarrin/discordgo"
 )
@@ -87,6 +89,7 @@ type autohostStatus struct {
 		Ping      *float64 `json:"ping"`
 		Players   *float64 `json:"players"`
 		Recreates *float64 `json:"recreates"`
+		Announced *bool    `json:"announced"` // false の間は ping ゲートで部屋ガチャ中
 	} `json:"lobby"`
 	Regulation *struct {
 		Name    string   `json:"name"`
@@ -164,7 +167,7 @@ func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow
 	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
 		discordgo.Button{Label: "部屋を立てる", Emoji: discordgo.ComponentEmoji{Name: "▶️"}, Style: discordgo.PrimaryButton,
 			CustomID: autohostBtnStart, Disabled: !startEnabled},
-		discordgo.Button{Label: "ゲーム開始", Emoji: discordgo.ComponentEmoji{Name: "🎮"}, Style: discordgo.SuccessButton,
+		discordgo.Button{Label: "試合開始", Emoji: discordgo.ComponentEmoji{Name: "🎮"}, Style: discordgo.SuccessButton,
 			CustomID: autohostBtnGameStart, Disabled: !st.inLobby() || !ready},
 		discordgo.Button{Label: "立て直し", Emoji: discordgo.ComponentEmoji{Name: "🔄"}, Style: discordgo.SecondaryButton,
 			CustomID: autohostBtnRecreate, Disabled: !st.inLobby() || !ready},
@@ -203,51 +206,100 @@ func editMessageEmbedComponents(s *discordgo.Session, channelID, messageID strin
 	return msg
 }
 
-// autohostEmbedField: 「自動ホスト」タイル。ValidFields で弾かれないよう Name/Value は必ず非空
-func (bot *Bot) autohostEmbedField(guildID string) *discordgo.MessageEmbedField {
-	st := bot.autohostReadStatus()
-	var b strings.Builder
+// autohostStateLine: 自動ホストの今の段階を 1〜2 行で。Bragame の画面が見えないので、段階ごとに細かく出す
+func autohostStateLine(st *autohostStatus, guildID string) string {
 	switch {
 	case st == nil:
-		b.WriteString("⚪ 自動ホスト bot に接続できません")
+		return "⚪ 自動ホスト bot に接続できません"
 	case st.usedElsewhere(guildID):
-		b.WriteString("⚠️ 別のサーバーで使用中です")
+		return "⚠️ 別のサーバーで使用中です"
 	case st.Busy != nil && *st.Busy == "starting":
-		b.WriteString("⏳ ホストを起動しています… (Steam の切り替え込みで最大 3 分)")
+		return "⏳ **起動中** — Steam をホスト用アカウントに切り替えて TOH-K を起動しています (最大 3 分)"
 	case st.Busy != nil:
-		b.WriteString("⏳ ホストを停止しています…")
+		return "⏳ **停止中** — ホストを終了しています"
 	case !st.AgentOK:
-		b.WriteString("⚪ Bragame のエージェントが応答しません (未ログオン?)")
+		return "⚪ Bragame のエージェントが応答しません (Bragame が未ログオン?)"
 	case !st.Host.GameRunning:
-		b.WriteString("⏹ 停止中 — 「▶ 部屋を立てる」で起動します")
-	case st.Lobby.State == "lobby":
-		b.WriteString("🟢 ロビー")
-		if st.Lobby.Code != "" {
-			fmt.Fprintf(&b, " `%s`", st.Lobby.Code)
+		return "⏹ **停止中** — 「▶️ 部屋を立てる」で起動します"
+	}
+	switch st.Lobby.State {
+	case "lobby":
+		if st.Lobby.Announced != nil && !*st.Lobby.Announced {
+			n := 1
+			if st.Lobby.Recreates != nil {
+				n = int(*st.Lobby.Recreates) + 1
+			}
+			s := fmt.Sprintf("🎲 **部屋ガチャ中** (%d部屋目)", n)
+			if st.Lobby.Ping != nil {
+				s += fmt.Sprintf(" — ping %.0fms", *st.Lobby.Ping)
+			}
+			return s + "\n東京サーバーの部屋を引くまで立て直しています"
+		}
+		return "🟢 **ロビーで待機中** — 人がそろったら「🎮 試合開始」"
+	case "ingame":
+		return "🎮 **試合中**"
+	case "menu":
+		return "⏸ メニュー画面 — 「▶️ 部屋を立てる」で部屋を作ります"
+	case "signing-in":
+		return "⏳ Among Us にサインインしています…"
+	case "updating":
+		return "⏳ TOH-K を自動更新しています… (終わると自動で再起動します)"
+	case "creating":
+		return "⏳ 部屋を作成しています…"
+	case "booting", "":
+		return "⏳ TOH-K を起動しています… (起動直後は 1〜2 分かかります)"
+	}
+	return fmt.Sprintf("⏳ 準備中 (%s)", st.Lobby.State)
+}
+
+func autohostTrim(s string) string {
+	if len([]rune(s)) > autohostFieldMax {
+		return string([]rune(s)[:autohostFieldMax]) + "…"
+	}
+	if s == "" {
+		return "​"
+	}
+	return s
+}
+
+// autohostEmbedFields: 「自動ホスト」タイル。AutoMuteUs の Host / Voice Channel と同じ並び (inline の欄) で
+// 部屋コード・ping・人数を大きく見せ、レギュレーションは別の欄にする。ValidFields で弾かれないよう Name/Value は必ず非空
+func (bot *Bot) autohostEmbedFields(dgs *GameState) []*discordgo.MessageEmbedField {
+	st := bot.autohostReadStatus()
+	head := autohostStateLine(st, dgs.GuildID)
+	// 成功した操作の結果は状態の行で十分なので出さない。失敗だけ一定時間出す
+	if st != nil && st.LastAction != nil && !st.LastAction.OK && time.Since(time.Unix(st.LastAction.At, 0)) < autohostLastActionTTL {
+		head += "\n⚠️ " + st.LastAction.Detail
+	}
+	fields := []*discordgo.MessageEmbedField{{Name: "🤖 自動ホスト", Value: autohostTrim(head)}}
+
+	inLobby := st != nil && st.Busy == nil && st.Host.GameRunning && st.Lobby.State == "lobby" && !st.usedElsewhere(dgs.GuildID)
+	if inLobby {
+		// 部屋コードは AutoMuteUs 自身も「🔒 ROOM CODE」で出すので、そちらが出ていないときだけ出す
+		if room, _, _ := dgs.GameData.GetRoomRegionMap(); room == "" && st.Lobby.Code != "" {
+			fields = append(fields, &discordgo.MessageEmbedField{Name: "🔑 部屋コード", Value: "**" + st.Lobby.Code + "**", Inline: true})
 		}
 		if st.Lobby.Ping != nil {
-			fmt.Fprintf(&b, " / ping %.0fms", *st.Lobby.Ping)
+			fields = append(fields, &discordgo.MessageEmbedField{Name: "📶 ping", Value: fmt.Sprintf("**%.0f** ms", *st.Lobby.Ping), Inline: true})
 		}
 		if st.Lobby.Players != nil {
 			// 自動ホスト自身 (GM) を除いた人数
-			fmt.Fprintf(&b, " / 参加 %d人", maxInt(int(*st.Lobby.Players)-1, 0))
+			fields = append(fields, &discordgo.MessageEmbedField{Name: "👥 参加", Value: fmt.Sprintf("**%d** 人", maxInt(int(*st.Lobby.Players)-1, 0)), Inline: true})
 		}
-	case st.Lobby.State == "ingame":
-		b.WriteString("🎮 試合中")
-	default:
-		fmt.Fprintf(&b, "⏳ 部屋を準備中 (%s)", st.Lobby.State)
 	}
 
-	if st != nil && st.Regulation != nil && st.Host.GameRunning {
+	if st != nil && st.Regulation != nil && st.Host.GameRunning && st.Lobby.State != "ingame" {
 		r := st.Regulation
-		b.WriteString("\n📋 ")
-		if r.Name != "" {
-			b.WriteString(r.Name)
-		} else if r.Preset != nil {
-			fmt.Fprintf(&b, "プリセット%.0f", *r.Preset)
+		name := "📋 レギュレーション"
+		switch {
+		case r.Name != "":
+			name += " — " + r.Name
+		case r.Preset != nil:
+			name += fmt.Sprintf(" — プリセット%.0f", *r.Preset)
 		}
+		var b strings.Builder
 		if r.ForPlay != nil {
-			fmt.Fprintf(&b, " (%.0f人で開始した場合)", *r.ForPlay)
+			fmt.Fprintf(&b, "%.0f人で試合開始した場合\n", *r.ForPlay)
 		}
 		roles := make([]string, 0, len(r.Roles))
 		for _, role := range r.Roles {
@@ -260,9 +312,7 @@ func (bot *Bot) autohostEmbedField(guildID string) *discordgo.MessageEmbedField 
 			}
 			roles = append(roles, s)
 		}
-		if len(roles) > 0 {
-			b.WriteString("\n" + strings.Join(roles, " / "))
-		}
+		b.WriteString(strings.Join(roles, " / "))
 		opts := make([]string, 0, len(r.Options))
 		for _, o := range r.Options {
 			opts = append(opts, o.Name+" "+o.Value)
@@ -270,21 +320,9 @@ func (bot *Bot) autohostEmbedField(guildID string) *discordgo.MessageEmbedField 
 		if len(opts) > 0 {
 			b.WriteString("\n" + strings.Join(opts, " / "))
 		}
+		fields = append(fields, &discordgo.MessageEmbedField{Name: name, Value: autohostTrim(b.String())})
 	}
-
-	if st != nil && st.LastAction != nil && time.Since(time.Unix(st.LastAction.At, 0)) < autohostLastActionTTL {
-		mark := "✅"
-		if !st.LastAction.OK {
-			mark = "⚠️"
-		}
-		fmt.Fprintf(&b, "\n%s %s", mark, st.LastAction.Detail)
-	}
-
-	value := b.String()
-	if len([]rune(value)) > autohostFieldMax {
-		value = string([]rune(value)[:autohostFieldMax]) + "…"
-	}
-	return &discordgo.MessageEmbedField{Name: "🤖 自動ホスト", Value: value, Inline: false}
+	return fields
 }
 
 func maxInt(a, b int) int {
@@ -294,12 +332,26 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// withAutohostField: game state の embed に自動ホストのタイルを足す (field 上限 25 を超えない範囲で)
-func (bot *Bot) withAutohostField(me *discordgo.MessageEmbed, guildID string) *discordgo.MessageEmbed {
-	if me == nil || !autohostEnabledFor(guildID) || len(me.Fields) >= 25 {
+// withAutohostField: game state の embed に自動ホストのタイルを足す (field 上限 25 を超えない範囲で)。
+// capture 接続前の「No capture linked」とメニュー画面の英語の案内は、自動ホストでは誤解を招くので差し替える
+func (bot *Bot) withAutohostField(me *discordgo.MessageEmbed, dgs *GameState) *discordgo.MessageEmbed {
+	if me == nil || dgs == nil || !autohostEnabledFor(dgs.GuildID) {
 		return me
 	}
-	me.Fields = append(me.Fields, bot.autohostEmbedField(guildID))
+	if !dgs.Linked {
+		me.Description = "⏳ 自動ホストとの接続を準備しています…"
+		me.Color = discord.GREEN
+	}
+	if dgs.GameData.Phase == game.MENU && me.Footer != nil {
+		// 「ロビーに参加してください」は手動ホスト向けの案内なので差し替える
+		me.Footer.Text = "自動ホストが部屋を作ると、ここにプレイヤーが表示されます"
+	}
+	for _, f := range bot.autohostEmbedFields(dgs) {
+		if len(me.Fields) >= 25 {
+			break
+		}
+		me.Fields = append(me.Fields, f)
+	}
 	return me
 }
 
@@ -400,7 +452,7 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	}
 
 	action := strings.TrimPrefix(customID, autohostButtonPrefix)
-	label := map[string]string{"start": "部屋を立てる", "gamestart": "ゲーム開始", "recreate": "立て直し", "stop": "停止"}[action]
+	label := map[string]string{"start": "部屋を立てる", "gamestart": "試合開始", "recreate": "立て直し", "stop": "停止"}[action]
 	if action == "start" && st.Host.GameRunning {
 		action = "room" // 起動済みでメニューに居るとき: 部屋建てだけ
 	}
@@ -430,7 +482,7 @@ func (bot *Bot) autohostNewResponse(guildID string, allowed bool) *discordgo.Int
 	case st.Busy != nil && *st.Busy == "starting":
 		msg = "⏳ 自動ホストを起動しています。このまま待つと部屋が立ち、下のメッセージに部屋コードが表示されます。"
 	case st.inLobby():
-		msg = fmt.Sprintf("🟢 自動ホストの部屋 `%s` が立っています。人がそろったら、下のメッセージの「🎮 ゲーム開始」を押してください。", st.Lobby.Code)
+		msg = fmt.Sprintf("🟢 自動ホストの部屋 `%s` が立っています。人がそろったら、下のメッセージの「🎮 試合開始」を押してください。", st.Lobby.Code)
 	case st.Host.GameRunning:
 		msg = "⏳ 自動ホストは起動中です。部屋が立つと、下のメッセージに部屋コードが表示されます。"
 	default:

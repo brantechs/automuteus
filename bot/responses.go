@@ -95,7 +95,7 @@ func (bot *Bot) gameStateResponse(dgs *GameState, sett *settings.GuildSettings) 
 		game.DISCUSS:  gamePlayMessage,
 		game.GAMEOVER: gamePlayMessage,
 	}
-	return bot.withAutohostField(messages[dgs.GameData.Phase](dgs, bot.StatusEmojis, sett), dgs.GuildID)
+	return bot.withAutohostField(messages[dgs.GameData.Phase](dgs, bot.StatusEmojis, sett), dgs)
 }
 
 func lobbyMetaEmbedFields(room, region string, author, voiceChannelID string, playerCount int, linkedPlayers int, sett *settings.GuildSettings) []*discordgo.MessageEmbedField {

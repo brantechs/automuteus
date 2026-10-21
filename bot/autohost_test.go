@@ -2,6 +2,7 @@ package bot
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bwmarrin/discordgo"
@@ -81,6 +82,22 @@ func TestAutohostStatusAcceptsFloats(t *testing.T) {
 		"regulation":{"name":"10人","preset":1.0,"roles":[{"name":"インポスター","count":2.0,"chance":100}]}}`)
 	if st.Lobby.Ping == nil || *st.Lobby.Ping != 4 || st.Regulation.Roles[0].Count != 2 {
 		t.Fatalf("unexpected parse: %+v", st)
+	}
+}
+
+func TestAutohostStateLine(t *testing.T) {
+	cases := map[string]string{
+		`{"busy":"starting","host":{},"lobby":{}}`:                                                                           "起動中",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"signing-in"}}`:                                      "サインイン",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"booting"}}`:                                         "TOH-K を起動",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":false,"recreates":2,"ping":49}}`: "3部屋目",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":true}}`:                          "ロビーで待機中",
+		`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`:                                        "停止中",
+	}
+	for raw, want := range cases {
+		if got := autohostStateLine(parseStatus(t, raw), "111"); !strings.Contains(got, want) {
+			t.Errorf("%s: got %q, want contains %q", raw, got, want)
+		}
 	}
 }
 
