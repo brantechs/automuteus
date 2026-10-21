@@ -83,8 +83,8 @@ type autohostStatus struct {
 		SteamPersona       string `json:"steam_persona"`
 	} `json:"host"`
 	Lobby struct {
-		State string `json:"state"`
-		Code  string `json:"code"`
+		State     string `json:"state"`
+		Code      string `json:"code"`
 		// 数値は AutoLobby/Python 側で float になっても読めるよう float64 で受ける
 		Ping      *float64 `json:"ping"`
 		Players   *float64 `json:"players"`
@@ -117,6 +117,11 @@ type autohostStatus struct {
 		At     int64  `json:"at"`
 		By     string `json:"by"`
 	} `json:"last_action"`
+	// Notice: 操作の結果ではない出来事 (放置で部屋が閉じられた など)。新しい部屋が確定すると消える
+	Notice *struct {
+		Text string `json:"text"`
+		At   int64  `json:"at"`
+	} `json:"notice"`
 	UpdatedAt int64 `json:"updated_at"`
 }
 
@@ -174,16 +179,20 @@ func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow
 	if lobby {
 		roomLabel, roomEmoji = "部屋を立て直す", "🔄"
 	}
+	// ホスト終了は /end も兼ねるので、操作中 (起動中・停止中) 以外はいつでも押せる
+	// (エージェントが応答しない・部屋が閉じられた後でも、BranMuteUs のゲームは終わらせられる)
+	stopEnabled := st == nil || st.Busy == nil
 	// discordgo v0.27.1 の Button.Emoji は値型 (omitempty 無し) で、未指定だと "emoji":{} が送られて
 	// Discord が COMPONENT_INVALID_EMOJI で弾く。絵文字は必ず Emoji に入れる
 	return discordgo.ActionsRow{Components: []discordgo.MessageComponent{
-		discordgo.Button{Label: roomLabel, Emoji: discordgo.ComponentEmoji{Name: roomEmoji}, Style: discordgo.PrimaryButton,
-			CustomID: autohostBtnStart, Disabled: !startEnabled},
+		// よく押す試合開始とホスト終了を離すため、試合開始を左端に置く
 		discordgo.Button{Label: "試合開始", Emoji: discordgo.ComponentEmoji{Name: "🎮"}, Style: discordgo.SuccessButton,
 			CustomID: autohostBtnGameStart, Disabled: !lobby},
+		discordgo.Button{Label: roomLabel, Emoji: discordgo.ComponentEmoji{Name: roomEmoji}, Style: discordgo.PrimaryButton,
+			CustomID: autohostBtnStart, Disabled: !startEnabled},
 		// ホスト終了: Bragame の自動ホスト用 Among Us を終了する (部屋は消える。設定の同期も再開する)
 		discordgo.Button{Label: "ホスト終了", Emoji: discordgo.ComponentEmoji{Name: "⏹️"}, Style: discordgo.DangerButton,
-			CustomID: autohostBtnStop, Disabled: !running},
+			CustomID: autohostBtnStop, Disabled: !stopEnabled},
 	}}
 }
 
@@ -254,7 +263,7 @@ func autohostStateLine(st *autohostStatus, guildID string) string {
 	case "ingame":
 		return "🎮 **試合中**"
 	case "menu":
-		return "⏸ メニュー画面 — 「▶️ 部屋を立てる」で部屋を作ります"
+		return "⚪ **部屋が接続されていません** — 「▶️ 部屋を立てる」で部屋を作ります"
 	case "signing-in":
 		return "⏳ Among Us にサインインしています…"
 	case "updating":
@@ -285,6 +294,9 @@ func (bot *Bot) autohostEmbedFields(dgs *GameState) []*discordgo.MessageEmbedFie
 	// 成功した操作の結果は状態の行で十分なので出さない。失敗だけ一定時間出す
 	if st != nil && st.LastAction != nil && !st.LastAction.OK && time.Since(time.Unix(st.LastAction.At, 0)) < autohostLastActionTTL {
 		head += "\n⚠️ " + st.LastAction.Detail
+	}
+	if st != nil && st.Notice != nil && st.Notice.Text != "" && !st.inLobby() {
+		head += "\nℹ️ " + st.Notice.Text
 	}
 	fields := []*discordgo.MessageEmbedField{{Name: "🤖 自動ホスト", Value: autohostTrim(head)}}
 
@@ -475,7 +487,19 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 	if !allowed {
 		return reply("⚠️ 自動ホストを操作する権限がありません。")
 	}
+	action := strings.TrimPrefix(customID, autohostButtonPrefix)
 	st := bot.autohostReadStatus()
+	if action == "stop" && (st == nil || st.usedElsewhere(i.GuildID)) {
+		// 自動ホスト bot に届かない・別サーバーで使用中でも、このサーバーの BranMuteUs のゲームは /end と同じように終わらせる
+		go bot.autohostEndGame(GameStateRequest{GuildID: i.GuildID, TextChannel: i.ChannelID})
+		if st == nil {
+			go bot.autohostPublish(autohostChActions, map[string]interface{}{
+				"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
+			})
+			return reply("受け付けました: BranMuteUs のゲームを終了します (自動ホスト bot に届かないため、ホストの終了は反映されないかもしれません)")
+		}
+		return reply("受け付けました: BranMuteUs のゲームを終了します (自動ホストは別のサーバーで使用中のため止めません)")
+	}
 	if st == nil {
 		return reply("⚪ 自動ホスト bot に接続できません。")
 	}
@@ -483,7 +507,6 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 		return reply("⚠️ 自動ホストは別のサーバーで使用中です。")
 	}
 
-	action := strings.TrimPrefix(customID, autohostButtonPrefix)
 	if action == "start" {
 		switch {
 		case st.inLobby():

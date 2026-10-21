@@ -32,9 +32,11 @@ func TestAutohostButtons(t *testing.T) {
 		raw  string
 		want map[string]bool // CustomID -> disabled
 	}{
-		{"no status", "", map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
+		{"no status", "", map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"stopped", `{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`,
-			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnStop: true}},
+			map[string]bool{autohostBtnStart: false, autohostBtnGameStart: true, autohostBtnStop: false}},
+		{"agent down", `{"agent_ok":false,"host":{"game_running":false},"lobby":{"state":"stopped"}}`,
+			map[string]bool{autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"starting", `{"busy":"starting","host":{"game_running":false},"lobby":{}}`,
 			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
 		// ロビーでは部屋ボタンが「部屋を立て直す」になって押せる
@@ -48,6 +50,8 @@ func TestAutohostButtons(t *testing.T) {
 		{"ingame", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"ingame"}}`,
 			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: false}},
 		{"other guild", `{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"},"link":{"guild_id":"999","connect_code":"AAAAAAAA"}}`,
+			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: false}},
+		{"stopping", `{"busy":"stopping","agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`,
 			map[string]bool{autohostBtnStart: true, autohostBtnGameStart: true, autohostBtnStop: true}},
 	}
 	for _, c := range cases {
@@ -72,10 +76,10 @@ func TestAutohostRoomButtonLabel(t *testing.T) {
 		}
 		return out
 	}
-	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "部屋を立て直す" || len(got) != 3 {
+	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "試合開始" || got[1] != "部屋を立て直す" || len(got) != 3 {
 		t.Fatalf("lobby: %v", got)
 	}
-	if got := labels(`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`); got[0] != "部屋を立てる" || got[2] != "ホスト終了" {
+	if got := labels(`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`); got[1] != "部屋を立てる" || got[2] != "ホスト終了" {
 		t.Fatalf("stopped: %v", got)
 	}
 }
@@ -107,12 +111,12 @@ func TestAutohostStatusAcceptsFloats(t *testing.T) {
 
 func TestAutohostStateLine(t *testing.T) {
 	cases := map[string]string{
-		`{"busy":"starting","host":{},"lobby":{}}`:                                                                           "起動中",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"signing-in"}}`:                                      "サインイン",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"booting"}}`:                                         "TOH-K を起動",
+		`{"busy":"starting","host":{},"lobby":{}}`:                                                                         "起動中",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"signing-in"}}`:                                     "サインイン",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"booting"}}`:                                        "TOH-K を起動",
 		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":false,"recreates":2,"ping":49}}`: "3部屋目",
-		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":true}}`:                          "ロビーで待機中",
-		`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`:                                        "停止中",
+		`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby","announced":true}}`:                         "ロビーで待機中",
+		`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`:                                       "停止中",
 	}
 	for raw, want := range cases {
 		if got := autohostStateLine(parseStatus(t, raw), "111"); !strings.Contains(got, want) {
