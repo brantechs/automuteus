@@ -454,6 +454,10 @@ func (bot *Bot) autohostUnlink(guildID, connectCode string) {
 // autohostAllowed: サーバー管理者・オーナー・AUTOHOST_ALLOWED_ROLE_IDS・AutoMuteUs の権限ロールのどれか
 func (bot *Bot) autohostAllowed(i *discordgo.InteractionCreate, sett *settings.GuildSettings) bool {
 	m := i.Member
+	// @everyone のロール ID (= サーバー ID) は Member.Roles に入らないので個別に見る
+	if autohostRoles[i.GuildID] {
+		return true
+	}
 	if m.Permissions&discordgo.PermissionAdministrator != 0 {
 		return true
 	}
