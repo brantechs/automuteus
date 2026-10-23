@@ -341,6 +341,13 @@ func (bot *Bot) processPlayer(sett *settings.GuildSettings, player game.Player, 
 					bot.DispatchRefreshOrEdit(dgs, dgsRequest, sett)
 					return true, userID, dgs, err
 				}
+				// fork: TOH-K の追放は AntiBlackout の再送とまとめて DIED で届く (tohk_exile.go)。
+				// 追放とみなした本人だけに反映し、ボードは書き換えない (隠しているキルが出てしまう)
+				if player.Action == game.DIED && tohkExile.NewDeath(dgs.ConnectCode, userID) {
+					log.Printf("tohk: %q died together with the AntiBlackout resend; treating it as an exile\n", player.Name)
+					bot.tohkApplyExile(dgs, sett, userID)
+					return false, userID, dgs, err
+				}
 				log.Println("NOT updating the discord status message; would leak info")
 				return false, userID, dgs, err
 			}
@@ -350,6 +357,13 @@ func (bot *Bot) processPlayer(sett *settings.GuildSettings, player game.Player, 
 			}
 			return true, userID, dgs, err
 		default:
+			// fork: 死亡済みの人の DIED 再送 (TOH-K の AntiBlackout)。直前に保留した新しい DIED があれば追放とみなす
+			if player.Action == game.DIED && player.IsDead && dgs.GameData.GetPhase() == game.TASKS {
+				if uid := tohkExile.Resend(dgs.ConnectCode); uid != "" {
+					log.Printf("tohk: user %s died together with the AntiBlackout resend; treating it as an exile\n", uid)
+					bot.tohkApplyExile(dgs, sett, uid)
+				}
+			}
 			return false, "", nil, nil
 		}
 	}
@@ -367,6 +381,12 @@ func (bot *Bot) processTransition(phase game.Phase, dgsRequest GameStateRequest)
 	if oldPhase == phase {
 		lock.Release(ctx)
 		return
+	}
+	// fork: tohk_exile.go
+	if phase == game.TASKS {
+		tohkExile.TasksStarted(dgs.ConnectCode)
+	} else if phase == game.LOBBY {
+		tohkExile.Forget(dgs.ConnectCode)
 	}
 	dgs.Linked = true
 	// if we started a new game
