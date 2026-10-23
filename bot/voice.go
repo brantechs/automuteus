@@ -1,7 +1,6 @@
 package bot
 
 import (
-	"context"
 	"github.com/automuteus/automuteus/v8/pkg/premium"
 	"github.com/automuteus/automuteus/v8/pkg/settings"
 	"github.com/automuteus/automuteus/v8/pkg/task"
@@ -182,42 +181,20 @@ func (bot *Bot) handleTrackedMembers(sess *discordgo.Session, sett *settings.Gui
 			premTier = prem
 		}
 
+		// fork: 優先する人を先頭に並べたまま 1 回で送る (レーンごとに先頭から送られる)。
+		// 上流は優先分が全部終わるまで残りの送信を待っていた
 		if priorityRequests > 0 {
-			req := task.UserModifyRequest{
-				Premium: premTier,
-				Users:   users[:priorityRequests],
-			}
-			// no lock; we're not done yet
-			err := bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, nil)
-			if err != nil {
-				log.Println(err)
-			} else {
-				log.Println("Successfully finished issuing high priority mutes")
-			}
-			rem := users[priorityRequests:]
-			if len(rem) > 0 {
-				req = task.UserModifyRequest{
-					Premium: premTier,
-					Users:   rem,
-				}
-				err := bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, voiceLock)
-				if err != nil {
-					log.Println(err)
-				}
-			} else if voiceLock != nil {
-				voiceLock.Release(context.Background())
-			}
+			log.Printf("Issuing %d mutes/deafens (%d high priority first)\n", len(users), priorityRequests)
 		} else {
-			// no priority; issue all at once
 			log.Println("Issuing mutes/deafens with no particular priority")
-			req := task.UserModifyRequest{
-				Premium: premTier,
-				Users:   users,
-			}
-			err := bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, voiceLock)
-			if err != nil {
-				log.Println(err)
-			}
+		}
+		req := task.UserModifyRequest{
+			Premium: premTier,
+			Users:   users,
+		}
+		err := bot.issueMutesAndRecord(dgs.GuildID, dgs.ConnectCode, req, voiceLock)
+		if err != nil {
+			log.Println(err)
 		}
 	}
 }

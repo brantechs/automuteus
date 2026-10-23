@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"github.com/automuteus/automuteus/v8/pkg/premium"
 	"github.com/automuteus/automuteus/v8/pkg/rediskey"
 	"github.com/automuteus/automuteus/v8/pkg/task"
@@ -13,6 +14,8 @@ import (
 	"github.com/go-redis/redis/v8"
 	"golang.org/x/exp/constraints"
 	"log"
+	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -162,6 +165,9 @@ func (tokenProvider *TokenProvider) ModifyUsers(guildID, connectCode string, req
 		return gerr
 	}
 	limit := PremiumBotConstraints[request.Premium]
+	if limit > 0 && os.Getenv("MUTE_LANES") != "0" {
+		return tokenProvider.modifyUsersByLane(guildID, request, limit)
+	}
 
 	tasksChannel := make(chan task.UserModify, len(request.Users))
 	wg := sync.WaitGroup{}
@@ -286,4 +292,100 @@ func (tokenProvider *TokenProvider) Close() {
 
 func (tokenProvider *TokenProvider) newGuild(s *discordgo.Session, m *discordgo.GuildCreate) {
 	log.Println("added to " + m.ID)
+}
+
+// fork: ミュートの送り先を「レーン」(作業用 bot ごと + 本体 bot) に均等に振り分ける (MUTE_LANES=0 で上流の動き)。
+// discordgo はセッションごとにメンバー PATCH を 1 件ずつしか送らない (リクエスト中は bucket をロックする) ので、
+// 上流の「1 つ目の bot を上限まで使ってから次」だと実際は 1〜2 本しか並ばない。
+// 並び順 (優先する人が先頭) はレーンの中でも保たれる。作業用 bot が使えないときはその分を本体 bot で送る
+type muteLane struct {
+	hToken string // 空なら本体 bot
+	sess   *discordgo.Session
+}
+
+func (tokenProvider *TokenProvider) muteLanes(limit int) []muteLane {
+	tokenProvider.sessionLock.RLock()
+	defer tokenProvider.sessionLock.RUnlock()
+	keys := make([]string, 0, len(tokenProvider.activeSessions))
+	for k := range tokenProvider.activeSessions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if len(keys) > limit {
+		keys = keys[:limit]
+	}
+	lanes := make([]muteLane, 0, len(keys)+1)
+	for _, k := range keys {
+		lanes = append(lanes, muteLane{hToken: k, sess: tokenProvider.activeSessions[k]})
+	}
+	if tokenProvider.primarySession != nil {
+		lanes = append(lanes, muteLane{sess: tokenProvider.primarySession})
+	}
+	return lanes
+}
+
+func (tokenProvider *TokenProvider) modifyUsersByLane(guildID string, request task.UserModifyRequest, limit int) error {
+	lanes := tokenProvider.muteLanes(limit)
+	if len(lanes) == 0 {
+		return errors.New("no discord session to apply mutes")
+	}
+	perLane := make([][]task.UserModify, len(lanes))
+	for i, u := range request.Users {
+		perLane[i%len(lanes)] = append(perLane[i%len(lanes)], u)
+	}
+	var (
+		wg        sync.WaitGroup
+		mu        sync.Mutex
+		latestErr error
+	)
+	mdsc := task.MuteDeafenSuccessCounts{}
+	used := make(map[string]struct{})
+	for i, l := range lanes {
+		if len(perLane[i]) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(l muteLane, users []task.UserModify) {
+			defer wg.Done()
+			for _, req := range users {
+				uid := strconv.FormatUint(req.UserID, 10)
+				if l.hToken != "" && tokenProvider.IncrAndTestGuildTokenComboLock(guildID, l.hToken) {
+					err := task.ApplyMuteDeaf(l.sess, guildID, uid, req.Mute, req.Deaf)
+					if err == nil {
+						log.Printf("Successfully applied mute=%v, deaf=%v to User %d using secondary bot: %s\n", req.Mute, req.Deaf, req.UserID, l.hToken)
+						mu.Lock()
+						mdsc.Worker++
+						used[l.hToken] = struct{}{}
+						mu.Unlock()
+						continue
+					}
+					log.Println("Failed to apply mute to player with error:", err)
+					// この bot が使えない (権限なし・トークン無効など 401/403) ときだけ 5 分使わない。
+					// 相手が VC を抜けた等の 400 で bot ごと止めると、その間ほかの人も本体 bot に寄る
+					var re *discordgo.RESTError
+					if errors.As(err, &re) && re.Response != nil && (re.Response.StatusCode == 401 || re.Response.StatusCode == 403) {
+						if err := tokenProvider.BlacklistTokenForDuration(guildID, l.hToken, UnresponsiveCaptureBlacklistDuration); err != nil {
+							log.Println(err)
+						}
+					}
+				}
+				// 本体 bot のレーン、または作業用 bot が使えなかった (上限・未参加・エラー) とき
+				err := task.ApplyMuteDeaf(tokenProvider.primarySession, guildID, uid, req.Mute, req.Deaf)
+				mu.Lock()
+				if err != nil {
+					latestErr = err
+					log.Println("Error on primary bot:", err)
+				} else {
+					mdsc.Official++
+					log.Printf("Successfully applied mute=%v, deaf=%v to User %d using primary bot\n", req.Mute, req.Deaf, req.UserID)
+				}
+				mu.Unlock()
+			}
+		}(l, perLane[i])
+	}
+	wg.Wait()
+
+	RecordDiscordRequestsByCounts(tokenProvider.client, mdsc)
+	go tokenProvider.verifyBotMembership(guildID, limit, used)
+	return latestErr
 }
