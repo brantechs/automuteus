@@ -68,8 +68,11 @@ func (bot *Bot) StartAPIServer(port string) {
 
 	r.GET("/open/link", handleGetOpenAmongUsCapture(bot))
 
-	// fork: TOH-K の試合結果 (AutoLobby の GameResult.cs が送る。tohk.go)
-	r.POST("/tohk/result", bot.handleTohkResult())
+	// fork: TOH-K の試合結果 (AutoLobby の GameResult.cs が送る。tohk.go)。受け口は TOHK_RECEIVER=1 のときだけ開く。
+	// 接続元 IP で絞っているので、リバースプロキシ越しに公開しているインスタンス (VPS) では開かないこと
+	if os.Getenv("TOHK_RECEIVER") == "1" {
+		r.POST("/tohk/result", bot.handleTohkResult())
+	}
 
 	// TODO add endpoints for notable player information, like total games played, num wins, etc
 
