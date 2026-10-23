@@ -765,11 +765,37 @@ func (bot *Bot) autohostRefreshLoop() {
 				if dgs.shouldRefresh() && !autohostRecreateAllowed(req.GuildID) {
 					continue
 				}
-				go bot.DispatchRefreshOrEdit(dgs, gsr, bot.StorageInterface.GetGuildSettings(req.GuildID))
+				sett := bot.StorageInterface.GetGuildSettings(req.GuildID)
+				if dgs.shouldRefresh() {
+					// 作り直し (削除+送信) は RefreshGameStateMessage が自分でロックを取る
+					go bot.DispatchRefreshOrEdit(dgs, gsr, sett)
+					continue
+				}
+				go bot.autohostEditLocked(gsr, sett)
 			}
 			_ = sub.Close()
 			log.Println("autohost: refresh subscription closed; retrying in 5s")
 			time.Sleep(5 * time.Second)
 		}
 	}
+}
+
+// autohostEditLocked: パネル更新の編集は dgs のロックを取ってから最新の状態で予約する。
+// ロックなしで読むと、入室 (JOINED) などの処理と同じ瞬間に走ったとき、その処理が保存する前の古い embed が
+// 最後に予約されて上書きされ、入室した人が「未リンク」のまま表示される (ゲーム内で色を変えるまで直らない)。
+// 入室の処理も DispatchRefreshOrEdit をロックを持ったまま呼ぶので、ロックの順に新しい状態で上書きされる
+func (bot *Bot) autohostEditLocked(gsr GameStateRequest, sett *settings.GuildSettings) {
+	for i := 0; i < 10; i++ {
+		lock, dgs := bot.RedisInterface.GetDiscordGameStateAndLock(gsr)
+		if lock == nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if dgs != nil && dgs.GameStateMsg.Exists() && !dgs.shouldRefresh() {
+			bot.DispatchRefreshOrEdit(dgs, gsr, sett)
+		}
+		_ = lock.Release(ctx)
+		return
+	}
+	log.Println("autohost: could not lock the game state for a panel refresh; skipped")
 }
