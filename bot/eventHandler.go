@@ -314,19 +314,27 @@ func (bot *Bot) processPlayer(sett *settings.GuildSettings, player game.Player, 
 		case player.Action == game.JOINED:
 			log.Println("Detected a player joined, refreshing User data mappings")
 			userID := dgs.AttemptPairingByMatchingNames(data)
+			via := "discord-name"
+			var uids map[string]interface{}
 			if userID == "" {
-				var uids map[string]interface{}
 				uids, err = bot.RedisInterface.GetUsernameOrUserIDMappings(dgs.GuildID, player.Name)
 				userID = dgs.AttemptPairingByUserIDs(data, uids)
+				via = "cache"
 			}
+			logPairing("joined", dgs, player, userID, via, uids)
 			bot.DispatchRefreshOrEdit(dgs, dgsRequest, sett)
 			return true, userID, dgs, err
 		case updated:
 			userID := dgs.AttemptPairingByMatchingNames(data)
+			via := "discord-name"
+			var uids map[string]interface{}
 			if userID == "" {
-				var uids map[string]interface{}
 				uids, err = bot.RedisInterface.GetUsernameOrUserIDMappings(dgs.GuildID, player.Name)
 				userID = dgs.AttemptPairingByUserIDs(data, uids)
+				via = "cache"
+			}
+			if dgs.GameData.GetPhase() == game.LOBBY {
+				logPairing(fmt.Sprintf("updated(action=%d)", player.Action), dgs, player, userID, via, uids)
 			}
 			if isAliveUpdated && dgs.GameData.GetPhase() == game.TASKS {
 				if sett.GetUnmuteDeadDuringTasks() || player.Action == game.EXILED {
@@ -517,4 +525,36 @@ func dumpGameToPostgres(dgs GameState, psql *storage.PsqlInterface, gameOver gam
 	if err != nil {
 		log.Println(err)
 	}
+}
+
+// fork: 入室・色変更のたびに、リンクの成否と理由をログに出す (「入室時に色を変えないと未リンクのまま」の調査用)。
+// cache の各ユーザーについて、VC にいない (UserData に無い) / 未リンク / 別の名前にリンク済み を書く
+func logPairing(event string, dgs *GameState, player game.Player, userID, via string, uids map[string]interface{}) {
+	result := "none"
+	if userID != "" {
+		result = userID
+		if v, ok := dgs.UserData[userID]; ok {
+			result += " linked-to=" + strconv.Quote(v.InGameName)
+		}
+	}
+	var parts []string
+	for uid := range uids {
+		v, ok := dgs.UserData[uid]
+		switch {
+		case !ok:
+			parts = append(parts, uid+":not-in-voice")
+		case v.InGameName == amongus.UnlinkedPlayerName:
+			parts = append(parts, uid+":unlinked")
+		default:
+			parts = append(parts, uid+":linked-to="+strconv.Quote(v.InGameName))
+		}
+	}
+	cache := "-"
+	if via == "cache" {
+		cache = "none"
+		if len(parts) > 0 {
+			cache = strings.Join(parts, ",")
+		}
+	}
+	log.Printf("pairing: %s %q color=%d -> %s (via %s; cache=%s; users-in-voice=%d)", event, player.Name, player.Color, result, via, cache, len(dgs.UserData))
 }

@@ -66,6 +66,10 @@ func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceS
 	tracked := m.ChannelID != "" && dgs.VoiceChannel == m.ChannelID
 
 	auData, found := dgs.GameData.GetByName(userData.InGameName)
+	// fork: リンク調査用。ゲームの VC に出入りした人と、その時点のリンク先を出す
+	if dgs.ConnectCode != "" && (tracked || dgs.VoiceChannel != "") {
+		log.Printf("pairing: voice user=%s tracked=%v in-game=%q found=%v phase=%d players=%d", m.UserID, tracked, userData.InGameName, found, dgs.GameData.GetPhase(), len(dgs.GameData.PlayerData))
+	}
 
 	var isAlive bool
 
