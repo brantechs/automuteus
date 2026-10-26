@@ -72,6 +72,7 @@ func (bot *Bot) StartAPIServer(port string) {
 	// 接続元 IP で絞っているので、リバースプロキシ越しに公開しているインスタンス (VPS) では開かないこと
 	if os.Getenv("TOHK_RECEIVER") == "1" {
 		r.POST("/tohk/result", bot.handleTohkResult())
+		go bot.tohkResolveUnlinked()
 	}
 
 	// TODO add endpoints for notable player information, like total games played, num wins, etc

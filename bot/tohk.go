@@ -295,11 +295,13 @@ func (bot *Bot) tohkResolve(ctx context.Context, resultID string) (bool, error) 
           AND (t.started_at = 0 OR abs(g.start_time - t.started_at) <= $2)
           -- 既に別の結果に紐づいた試合は使わない
           AND NOT EXISTS (SELECT 1 FROM tohk_games x WHERE x.amu_game_id = g.game_id AND x.result_id <> t.result_id)
-          -- AutoMuteUs 側でリンクされていた色が、TOH-K の結果に全部いる試合だけ (別の部屋の試合を拾わない)。
-          -- リンク済みの人が 1 人もいない試合は見分けがつかないので使わない
+          -- AutoMuteUs 側でリンクされていた人が、TOH-K の結果に色か名前で全員いる試合だけ (別の部屋の試合を拾わない)。
+          -- 色は結果に入っていないことがある (AutoLobby 0.5 系は全員 -1 を送っていた) ので名前でも照合する。
+          -- users_games.player_name は 10 文字まで。リンク済みの人が 1 人もいない試合は見分けがつかないので使わない
           AND EXISTS (SELECT 1 FROM users_games ug WHERE ug.game_id = g.game_id)
           AND NOT EXISTS (SELECT 1 FROM users_games ug WHERE ug.game_id = g.game_id
-              AND ug.player_color NOT IN (SELECT color FROM tohk_players WHERE result_id = t.result_id))
+              AND ug.player_color NOT IN (SELECT color FROM tohk_players WHERE result_id = t.result_id)
+              AND ug.player_name NOT IN (SELECT left(name, 10) FROM tohk_players WHERE result_id = t.result_id))
         ORDER BY abs(g.end_time - t.ended_at) LIMIT 1`, resultID, tohkMatchWindowSec).Scan(&gameID, &guildID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
@@ -311,11 +313,19 @@ func (bot *Bot) tohkResolve(ctx context.Context, resultID string) (bool, error) 
 		resultID, gameID, guildID); err != nil {
 		return false, err
 	}
-	// 同じ色が 2 人いる (途中で色替えなど) ときは紐づけない
+	// 色で紐づける。同じ色が 2 人いる (途中で色替えなど) ときは紐づけない
 	if _, err = pool.Exec(ctx, `UPDATE tohk_players p SET user_id = ug.user_id
         FROM (SELECT player_color, min(user_id) AS user_id FROM users_games WHERE game_id = $2
               GROUP BY player_color HAVING count(*) = 1) ug
-        WHERE p.result_id = $1 AND ug.player_color = p.color`, resultID, gameID); err != nil {
+        WHERE p.result_id = $1 AND p.color >= 0 AND ug.player_color = p.color`, resultID, gameID); err != nil {
+		return false, err
+	}
+	// 色で付かなかった人は名前で (色が -1 の結果も)。色も AutoMuteUs の記録から埋める
+	if _, err = pool.Exec(ctx, `UPDATE tohk_players p SET user_id = ug.user_id,
+            color = CASE WHEN p.color < 0 THEN ug.player_color ELSE p.color END
+        FROM (SELECT player_name, min(user_id) AS user_id, min(player_color) AS player_color FROM users_games
+              WHERE game_id = $2 GROUP BY player_name HAVING count(*) = 1) ug
+        WHERE p.result_id = $1 AND p.user_id IS NULL AND left(p.name, 10) = ug.player_name`, resultID, gameID); err != nil {
 		return false, err
 	}
 	if _, err = pool.Exec(ctx, `UPDATE tohk_players p SET killer_user_id = k.user_id FROM tohk_players k
@@ -641,4 +651,43 @@ func (bot *Bot) tohkRankingEmbed(ctx context.Context, guildID string) (*discordg
 		},
 		Footer: &discordgo.MessageEmbedFooter{Text: fmt.Sprintf("%d 試合以上の人だけ ・ TOH-K の結果送信を入れたホストの試合だけを数えています", tohkMinRankGames)},
 	}, nil
+}
+
+// tohkResolveUnlinked: 起動時に、まだ AutoMuteUs の試合に紐づいていない最近の結果を照合し直す
+// (照合の条件を直したときや、受信直後の再試行の間に AutoMuteUs が試合を記録できなかったとき用)
+func (bot *Bot) tohkResolveUnlinked() {
+	time.Sleep(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := bot.tohkEnsureSchema(ctx); err != nil {
+		log.Println("tohk: schema check failed:", err)
+		return
+	}
+	rows, err := bot.PostgresInterface.Pool.Query(ctx, `SELECT result_id FROM tohk_games
+        WHERE amu_game_id IS NULL AND received_at > extract(epoch from now()) - 30*86400 ORDER BY ended_at`)
+	if err != nil {
+		log.Println("tohk: listing unlinked results failed:", err)
+		return
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	linked := 0
+	for _, id := range ids {
+		ok, err := bot.tohkResolve(ctx, id)
+		if err != nil {
+			log.Println("tohk: resolve failed:", err)
+		}
+		if ok {
+			linked++
+		}
+	}
+	if len(ids) > 0 {
+		log.Printf("tohk: re-resolved unlinked results: %d of %d linked\n", linked, len(ids))
+	}
 }
