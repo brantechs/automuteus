@@ -76,7 +76,7 @@ func TestAutohostRoomButtonLabel(t *testing.T) {
 		}
 		return out
 	}
-	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "試合開始" || got[1] != "部屋を立て直す" || got[3] != "ライブ観戦" || len(got) != 4 {
+	if got := labels(`{"agent_ok":true,"host":{"game_running":true},"lobby":{"state":"lobby"}}`); got[0] != "試合開始" || got[1] != "部屋を立て直す" || got[3] != "ライブ観戦" || got[4] != "ミュート再同期" || len(got) != 5 {
 		t.Fatalf("lobby: %v", got)
 	}
 	if got := labels(`{"agent_ok":true,"host":{"game_running":false},"lobby":{"state":"stopped"}}`); got[1] != "部屋を立てる" || got[2] != "ホスト終了" {
@@ -170,6 +170,29 @@ func TestAutohostEnabledFor(t *testing.T) {
 	autohostGuilds = map[string]bool{"2": true}
 	if autohostEnabledFor("1") || !autohostEnabledFor("2") {
 		t.Fatal("guild allow list not honored")
+	}
+}
+
+// ミュート再同期ボタン: このサーバーの /new に紐づいている間だけ押せる。ライブ観戦の右 (5 個目、1 行の上限)
+func TestAutohostResyncButton(t *testing.T) {
+	var st autohostStatus
+	if err := json.Unmarshal([]byte(`{"v":1,"host":{"game_running":true},"lobby":{"state":"ingame"},
+		"link":{"guild_id":"1","connect_code":"ABCDEFGH"}}`), &st); err != nil {
+		t.Fatal(err)
+	}
+	row := autohostComponents(&st, "1")
+	if len(row.Components) != 5 {
+		t.Fatalf("buttons %d", len(row.Components))
+	}
+	b := row.Components[4].(discordgo.Button)
+	if b.CustomID != autohostBtnResync || b.Disabled || b.Emoji.Name == "" {
+		t.Fatalf("resync button %+v", b)
+	}
+	if !autohostComponents(&st, "2").Components[4].(discordgo.Button).Disabled {
+		t.Fatal("resync must be disabled in another guild")
+	}
+	if !autohostComponents(nil, "1").Components[4].(discordgo.Button).Disabled {
+		t.Fatal("resync must be disabled without status")
 	}
 }
 

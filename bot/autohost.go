@@ -47,6 +47,8 @@ const (
 	// ライブ観戦: 誰でも押せる (操作権限は要らない)。確認ボタンは bot が書く警告メッセージに付く
 	autohostBtnWatch        = "autohost:watch"
 	autohostBtnWatchConfirm = "autohost:watch:confirm"
+	// ミュート再同期: 自動ホスト bot に本当の段階と死亡者を送り直させてから、ここで全員のミュートをかけ直す
+	autohostBtnResync = "autohost:resync"
 	// 立て直し・ホスト終了は押した人だけに見える確認メッセージを挟む (Discord のボタンには確認ダイアログが無い)
 	autohostConfirmPrefix = "autohost:confirm:"
 	autohostBtnCancel     = "autohost:cancel"
@@ -216,6 +218,9 @@ func autohostComponents(st *autohostStatus, guildID string) discordgo.ActionsRow
 		// ライブ観戦: 押した人だけに専用 URL が届く (handleAutohostButton → bot)
 		discordgo.Button{Label: "ライブ観戦", Emoji: discordgo.ComponentEmoji{Name: "📺"}, Style: discordgo.SecondaryButton,
 			CustomID: autohostBtnWatch, Disabled: !st.watchable(guildID)},
+		// ミュート再同期: 段階のずれ (試合中なのにメインメニュー扱い等) やミュートの掛け違いを直す
+		discordgo.Button{Label: "ミュート再同期", Emoji: discordgo.ComponentEmoji{Name: "🔁"}, Style: discordgo.SecondaryButton,
+			CustomID: autohostBtnResync, Disabled: !(ready && st.Link != nil && st.Link.GuildID == guildID)},
 	}}
 }
 
@@ -576,6 +581,18 @@ func (bot *Bot) handleAutohostButton(i *discordgo.InteractionCreate, sett *setti
 				"⚠️ **部屋 `%s` を立て直しますか？**\n今の部屋は閉じられ、部屋コードが変わります。参加中の人は入り直しになります。", st.Lobby.Code), "立て直す")
 		}
 	}
+	if action == "resync" {
+		if st.Link == nil || st.Link.GuildID != i.GuildID {
+			return reply("ℹ️ 再同期できるのは、このサーバーで /new している間だけです。")
+		}
+		// 自動ホスト bot が AutoLobby から本当の段階と死亡者を取り直して送り直す (段階が同じなら AutoMuteUs は
+		// 何もしないので、その後にここで全員のミュートを今の状態でかけ直す)
+		go bot.autohostPublish(autohostChActions, map[string]interface{}{
+			"id": i.ID, "action": action, "guild_id": i.GuildID, "user_id": i.Member.User.ID, "allowed": allowed,
+		})
+		go bot.autohostRemuteLater(GameStateRequest{GuildID: i.GuildID, TextChannel: i.ChannelID, ConnectCode: st.Link.ConnectCode}, sett)
+		return silentAck
+	}
 	label := map[string]string{"start": "部屋を立てる", "room": "部屋を立てる", "gamestart": "試合開始",
 		"recreate": "部屋を立て直す", "stop": "ホスト終了 (BranMuteUs のゲームも終了します)"}[action]
 	if action == "stop" {
@@ -630,6 +647,17 @@ func (bot *Bot) autohostWatchResponse(i *discordgo.InteractionCreate, confirm bo
 	}
 	return &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral}}
+}
+
+// autohostRemuteLater: ミュート再同期の後半。自動ホスト bot が段階・死亡者を送り直すのを待ってから、
+// 今のゲーム状態で全員のミュートをかけ直し、パネルも更新する
+func (bot *Bot) autohostRemuteLater(gsr GameStateRequest, sett *settings.GuildSettings) {
+	time.Sleep(3 * time.Second)
+	bot.handleTrackedMembers(bot.PrimarySession, sett, 0, NoPriority, gsr)
+	if dgs := bot.RedisInterface.GetReadOnlyDiscordGameState(gsr); dgs != nil {
+		bot.DispatchRefreshOrEdit(dgs, gsr, sett)
+	}
+	log.Printf("autohost: resynced mutes for game %s in guild %s\n", gsr.ConnectCode, gsr.GuildID)
 }
 
 // autohostConfirmResponse: 押した人だけに見える確認メッセージ。実行すると autohost:confirm:<action> が届く
