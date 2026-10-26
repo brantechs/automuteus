@@ -78,6 +78,19 @@ type tohkPlayer struct {
 	TasksDone    int      `json:"tasks_done"`
 	TasksTotal   int      `json:"tasks_total"`
 	Disconnected bool     `json:"disconnected"`
+	DeathDay     int      `json:"death_day"` // AutoLobby 0.6 から (それより前は 0)
+	HasTasks     *bool    `json:"has_tasks"` // AutoLobby 0.6 から
+}
+
+// tohkEvent: 試合中の出来事 (AutoLobby 0.6 から)。kind = task (タスク完了) / douse (アーソニストの塗り完了)
+type tohkEvent struct {
+	Kind     string `json:"kind"`
+	PlayerID int    `json:"player_id"`
+	TargetID *int   `json:"target_id"`
+	Day      int    `json:"day"`
+	Alive    bool   `json:"alive"`
+	Done     int    `json:"done"`
+	At       int64  `json:"at"`
 }
 
 type tohkResult struct {
@@ -94,6 +107,7 @@ type tohkResult struct {
 	WinnerTeam            string       `json:"winner_team"`
 	AdditionalWinnerRoles []string     `json:"additional_winner_roles"`
 	Players               []tohkPlayer `json:"players"`
+	Events                []tohkEvent  `json:"events"`
 	Log                   string       `json:"log"`
 }
 
@@ -152,7 +166,21 @@ CREATE TABLE IF NOT EXISTS tohk_players (
     disconnected     boolean NOT NULL DEFAULT false,
     PRIMARY KEY (result_id, player_id)
 );
-CREATE INDEX IF NOT EXISTS tohk_players_user ON tohk_players (user_id);`)
+CREATE INDEX IF NOT EXISTS tohk_players_user ON tohk_players (user_id);
+ALTER TABLE tohk_players ADD COLUMN IF NOT EXISTS death_day smallint NOT NULL DEFAULT 0;
+ALTER TABLE tohk_players ADD COLUMN IF NOT EXISTS has_tasks boolean;
+CREATE TABLE IF NOT EXISTS tohk_events (
+    result_id text NOT NULL REFERENCES tohk_games(result_id) ON DELETE CASCADE,
+    seq       integer NOT NULL,
+    kind      text NOT NULL,
+    player_id smallint NOT NULL,
+    target_id smallint,
+    day       smallint NOT NULL DEFAULT 0,
+    alive     boolean NOT NULL DEFAULT false,
+    done      smallint NOT NULL DEFAULT 0,
+    at        bigint NOT NULL DEFAULT 0,
+    PRIMARY KEY (result_id, seq)
+);`)
 	if err == nil {
 		tohkSchemaReady = true
 	}
@@ -184,6 +212,8 @@ func (r *tohkResult) validate() error {
 		return errors.New("bad id")
 	case r.EndedAt <= 0:
 		return errors.New("bad ended_at")
+	case len(r.Events) > 5000:
+		return fmt.Errorf("too many events %d", len(r.Events))
 	case len(r.Players) == 0 || len(r.Players) > 20:
 		return fmt.Errorf("bad player count %d", len(r.Players))
 	}
@@ -250,11 +280,21 @@ func (bot *Bot) tohkStore(ctx context.Context, res *tohkResult, raw []byte) (boo
 	for _, p := range res.Players {
 		_, err = tx.Exec(ctx, `INSERT INTO tohk_players (result_id, player_id, name, color, role, role_name, team,
             count_type, sub_roles, ghost_role, won, dead, death_reason, killer_player_id, death_at, kills,
-            tasks_done, tasks_total, disconnected)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            tasks_done, tasks_total, disconnected, death_day, has_tasks)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 			res.ID, p.ID, p.Name, p.Color, p.Role, p.RoleName, p.Team, p.CountType, nonNil(p.SubRoles), p.GhostRole,
-			p.Won, p.Dead, p.DeathReason, p.KillerID, p.DeathAt, p.Kills, p.TasksDone, p.TasksTotal, p.Disconnected)
+			p.Won, p.Dead, p.DeathReason, p.KillerID, p.DeathAt, p.Kills, p.TasksDone, p.TasksTotal, p.Disconnected,
+			p.DeathDay, p.HasTasks)
 		if err != nil {
+			return false, err
+		}
+	}
+	for i, e := range res.Events {
+		if e.Kind != "task" && e.Kind != "douse" {
+			continue
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO tohk_events (result_id, seq, kind, player_id, target_id, day, alive, done, at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, res.ID, i, e.Kind, e.PlayerID, e.TargetID, e.Day, e.Alive, e.Done, e.At); err != nil {
 			return false, err
 		}
 	}
@@ -507,7 +547,10 @@ func (bot *Bot) tohkStatsEmbed(ctx context.Context, guildID, userID string) (*di
         GROUP BY coalesce(v.user_id::text, v.name), v.user_id ORDER BY count(*) DESC LIMIT 3`); err != nil {
 		return nil, err
 	}
-	e.Footer = &discordgo.MessageEmbedFooter{Text: "TOH-K の結果送信を入れたホストの試合だけを数えています"}
+	if err := bot.tohkSpeedFields(ctx, e, guildID, userID); err != nil {
+		return nil, err
+	}
+	e.Footer = &discordgo.MessageEmbedFooter{Text: "TOH-K の結果送信を入れたホストの試合だけを数えています。ターン = 会議と会議の間"}
 	return e, nil
 }
 
