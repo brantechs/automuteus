@@ -52,6 +52,14 @@ var TohkCommand = discordgo.ApplicationCommand{
 		},
 		{Name: "last", Description: "直近の試合の結果とキルログ", Type: discordgo.ApplicationCommandOptionSubCommand},
 		{Name: "ranking", Description: "勝率とキル数のランキング", Type: discordgo.ApplicationCommandOptionSubCommand},
+		{
+			Name:        "history",
+			Description: "全期間の参加・生存の戦績 (AutoMuteUs の記録から。省略すると自分)",
+			Type:        discordgo.ApplicationCommandOptionSubCommand,
+			Options: []*discordgo.ApplicationCommandOption{
+				{Name: "user", Description: "戦績を見たい人", Type: discordgo.ApplicationCommandOptionUser},
+			},
+		},
 	},
 }
 
@@ -437,6 +445,14 @@ func (bot *Bot) handleTohkCommand(i *discordgo.InteractionCreate, _ *settings.Gu
 		embed, err = bot.tohkLastEmbed(ctx, i.GuildID)
 	case "ranking":
 		embed, err = bot.tohkRankingEmbed(ctx, i.GuildID)
+	case "history":
+		userID := i.Member.User.ID
+		for _, o := range sub.Options {
+			if o.Name == "user" {
+				userID = o.UserValue(nil).ID
+			}
+		}
+		embed, err = bot.tohkHistoryEmbed(ctx, i.GuildID, userID)
 	}
 	if err != nil {
 		log.Println("tohk: query failed:", err)
