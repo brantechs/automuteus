@@ -20,6 +20,19 @@ const (
 	DeadPriority  HandlePriority = 2
 )
 
+// fork: mute-spectators が有効で、ゲーム内の全員がリンク済みのときだけ、VC にいる未リンクの人を
+// 観戦者として死者 (天界) と同じに扱う。未リンクのプレイヤーがいる間は、その人を観戦者と
+// 決めつけて生存者なのにミュートしないよう、上流どおり触らない
+func (dgs *GameState) spectatorsAsDead(sett *settings.GuildSettings) bool {
+	return sett.GetMuteSpectator() && dgs.AllPlayersLinked()
+}
+
+// 音楽 bot や録音 bot は観戦者として扱わない
+func isBotMember(sess *discordgo.Session, guildID, userID string) bool {
+	m, err := sess.State.Member(guildID, userID)
+	return err == nil && m.User != nil && m.User.Bot
+}
+
 func (bot *Bot) applyToSingle(dgs *GameState, userID string, mute, deaf bool) error {
 	prem, days, _ := bot.PostgresInterface.GetGuildOrUserPremiumStatus(bot.official, nil, dgs.GuildID, "")
 	premTier := premium.FreeTier
@@ -64,7 +77,8 @@ func (bot *Bot) applyToAll(dgs *GameState, mute, deaf bool) error {
 
 		_, linked := dgs.GameData.GetByName(userData.InGameName)
 		// only actually tracked if we're in a tracked channel AND linked to a player
-		tracked = tracked && linked
+		// fork: 解除のときは、観戦者としてミュートした未リンクの人も戻す
+		tracked = tracked && (linked || (!mute && !deaf && (userData.ShouldBeMute || userData.ShouldBeDeaf)))
 
 		if tracked {
 			uid, _ := strconv.ParseUint(userData.User.UserID, 10, 64)
@@ -110,6 +124,7 @@ func (bot *Bot) handleTrackedMembers(sess *discordgo.Session, sett *settings.Gui
 	var users []task.UserModify
 
 	priorityRequests := 0
+	spectatorsAsDead := dgs.spectatorsAsDead(sett)
 	for _, voiceState := range g.VoiceStates {
 		userData, err := dgs.GetUser(voiceState.UserID)
 		if err != nil {
@@ -124,20 +139,16 @@ func (bot *Bot) handleTrackedMembers(sess *discordgo.Session, sett *settings.Gui
 		tracked := voiceState.ChannelID != "" && dgs.VoiceChannel == voiceState.ChannelID
 
 		auData, found := dgs.GameData.GetByName(userData.InGameName)
-		// only actually tracked if we're in a tracked channel AND linked to a player
+		spectator := !found && spectatorsAsDead && !isBotMember(sess, g.ID, voiceState.UserID)
 		var isAlive bool
 
 		// only actually tracked if we're in a tracked channel AND linked to a player
-		if !sett.GetMuteSpectator() {
+		if !spectator {
 			tracked = tracked && found
 			isAlive = auData.IsAlive
 		} else {
-			if !found {
-				// we just assume the spectator is dead
-				isAlive = false
-			} else {
-				isAlive = auData.IsAlive
-			}
+			// we just assume the spectator is dead
+			isAlive = false
 		}
 		shouldMute, shouldDeaf := sett.GetVoiceState(isAlive, tracked, dgs.GameData.GetPhase())
 
@@ -146,7 +157,8 @@ func (bot *Bot) handleTrackedMembers(sess *discordgo.Session, sett *settings.Gui
 		// only issue a change if the User isn't in the right state already
 		// nicksmatch can only be false if the in-game data is != nil, so the reference to .audata below is safe
 		// check the userdata is linked here to not accidentally undeafen music bots, for example
-		if incorrectMuteDeafenState && (found || sett.GetMuteSpectator()) {
+		// fork: 観戦者としてミュートした人は、観戦者扱いでなくなったら (未リンクのプレイヤーが出た等) 戻す
+		if incorrectMuteDeafenState && (found || spectator || userData.ShouldBeMute || userData.ShouldBeDeaf) {
 			uid, _ := strconv.ParseUint(userData.User.UserID, 10, 64)
 			userModify := task.UserModify{
 				UserID: uid,

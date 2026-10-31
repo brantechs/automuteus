@@ -19,6 +19,23 @@ func (dgs *GameState) GetCountLinked() int {
 	return LinkedPlayerCount
 }
 
+// fork: ゲーム内のプレイヤー全員が Discord の誰かとリンク済みか。
+// 未リンクのプレイヤーがいると、VC の未リンクの人がその本人かもしれない
+func (dgs *GameState) AllPlayersLinked() bool {
+	linked := make(map[string]struct{})
+	for _, v := range dgs.UserData {
+		if v.InGameName != amongus.UnlinkedPlayerName {
+			linked[strings.ReplaceAll(strings.ToLower(v.InGameName), " ", "")] = struct{}{}
+		}
+	}
+	for _, p := range dgs.GameData.PlayerData {
+		if _, ok := linked[strings.ReplaceAll(strings.ToLower(p.Name), " ", "")]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (dgs *GameState) AttemptPairingByMatchingNames(data amongus.PlayerData) string {
 	name := strings.ReplaceAll(strings.ToLower(data.Name), " ", "")
 	for userID, v := range dgs.UserData {

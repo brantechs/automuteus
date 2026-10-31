@@ -71,23 +71,21 @@ func (bot *Bot) handleVoiceStateChange(s *discordgo.Session, m *discordgo.VoiceS
 		log.Printf("pairing: voice user=%s tracked=%v in-game=%q found=%v phase=%d players=%d", m.UserID, tracked, userData.InGameName, found, dgs.GameData.GetPhase(), len(dgs.GameData.PlayerData))
 	}
 
+	// fork: 観戦者 (未リンクの人) が試合中に VC に入ったときも天界と同じにする
+	spectator := !found && dgs.spectatorsAsDead(sett) && !(m.Member != nil && m.Member.User != nil && m.Member.User.Bot)
 	var isAlive bool
 
 	// only actually tracked if we're in a tracked channel AND linked to a player
-	if !sett.GetMuteSpectator() {
+	if !spectator {
 		tracked = tracked && found
 		isAlive = auData.IsAlive
 	} else {
-		if !found {
-			// we just assume the spectator is dead
-			isAlive = false
-		} else {
-			isAlive = auData.IsAlive
-		}
+		// we just assume the spectator is dead
+		isAlive = false
 	}
 	mute, deaf := sett.GetVoiceState(isAlive, tracked, dgs.GameData.GetPhase())
 	// check the userdata is linked here to not accidentally undeafen music bots, for example
-	if found && (userData.ShouldBeDeaf != deaf || userData.ShouldBeMute != mute) && (mute != m.Mute || deaf != m.Deaf) {
+	if (found || spectator || userData.ShouldBeMute || userData.ShouldBeDeaf) && (userData.ShouldBeDeaf != deaf || userData.ShouldBeMute != mute) && (mute != m.Mute || deaf != m.Deaf) {
 		userData.SetShouldBeMuteDeaf(mute, deaf)
 
 		dgs.UpdateUserData(m.UserID, userData)
